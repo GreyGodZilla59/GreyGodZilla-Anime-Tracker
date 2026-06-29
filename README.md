@@ -8,7 +8,7 @@ Portable Windows desktop app for tracking **airing and upcoming anime** — dail
 
 **Latest release:** [GitHub Releases](https://github.com/GreyGodZilla59/GreyGodZilla-Anime-Tracker/releases/latest)
 
-**v1.1.3** — Webhook fix, test ping, check-now, versioned builds.
+**v1.2.0** — In-app streaming via AnimeHeaven.me, webhook alerts, schedule views.
 
 Single `.exe`, no installer, no account.
 
@@ -17,13 +17,15 @@ Single `.exe`, no installer, no account.
 1. Download `Grey GodZilla Anime Tracker v1.1.3.exe` from Releases
 2. Run it anywhere — no install step
 3. Browse **Today**, **This Week**, **This Month**, **Airing Now**, or **Upcoming**
-4. Click **+ Track** on any show, or use the **Webhooks** tab to search and add shows
-5. Paste a Discord webhook URL → **Send Test Ping** → enable notifications → **Save Settings**
+4. Click **▶ Watch** on any show to stream via [AnimeHeaven.me](https://animeheaven.me)
+5. Click **+ Track** for webhook alerts, or use the **Webhooks** tab
+6. Paste a Discord webhook URL → **Send Test Ping** → enable notifications → **Save Settings**
 
 ## Features
 
 - **Schedule views** — Today, This Week, This Month
 - **Airing & Upcoming** — full season lists with search
+- **▶ Watch** — stream episodes in-app via AnimeHeaven.me
 - **Webhook notifications** — Discord (or any HTTP endpoint) when a tracked show drops a new episode
 - **Fast startup** — disk + memory cache, lazy loading for weekly/monthly
 - **Grey GodZilla branding** — fiery dark theme, portable `.exe`

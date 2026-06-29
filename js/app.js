@@ -10,6 +10,15 @@ const state = {
   season: { now: null, upcoming: null },
   webhook: { config: null, status: null },
   watchlist: [],
+  stream: {
+    open: false,
+    anime: null,
+    ahId: null,
+    episodes: [],
+    currentEp: null,
+    loading: false,
+    error: null,
+  },
   loading: new Set(),
   loaded: new Set(),
   error: null,
@@ -129,10 +138,45 @@ function isTracked(malId) {
   return state.watchlist.some((w) => Number(w.mal_id) === Number(malId));
 }
 
+function findAnimeById(malId) {
+  const id = Number(malId);
+  const pools = [
+    state.bootstrap?.today,
+    state.bootstrap?.now,
+    state.bootstrap?.upcoming,
+    state.season?.now,
+    state.season?.upcoming,
+    state.monthly?.premieres,
+    state.monthly?.ongoing,
+    state.monthly?.starting_soon,
+    state.watchlist,
+  ];
+  if (state.weekly?.schedule) {
+    pools.push(...Object.values(state.weekly.schedule));
+  }
+  for (const pool of pools) {
+    if (!pool) continue;
+    const list = Array.isArray(pool) ? pool : [pool];
+    const hit = list.find((a) => Number(a.mal_id) === id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 function trackButton(a) {
   if (!a.mal_id) return '';
   const tracked = isTracked(a.mal_id);
   return `<button type="button" class="track-btn ${tracked ? 'tracked' : ''}" data-track-id="${a.mal_id}" title="Notify via webhook when a new episode releases">${tracked ? '✓ Tracked' : '+ Track'}</button>`;
+}
+
+function watchButton(a) {
+  if (!a.mal_id) return '';
+  const title = escapeHtml(titleOf(a));
+  return `<button type="button" class="watch-btn" data-watch-mal-id="${a.mal_id}" data-watch-title="${title}" title="Stream on AnimeHeaven.me">▶ Watch</button>`;
+}
+
+function actionButtons(a) {
+  return `<div class="detail-actions">${watchButton(a)}${trackButton(a)}</div>`;
 }
 
 function metaChips(a) {
@@ -166,7 +210,7 @@ function detailRow(a) {
       <div class="detail-side">
         <div class="detail-score">${score}</div>
         ${rank ? `<div class="detail-rank">Rank ${rank}</div>` : ''}
-        ${trackButton(a)}
+        ${actionButtons(a)}
       </div>
     </article>
   `;
@@ -199,7 +243,7 @@ function cardHtml(a) {
           </div>
         </div>
       </a>
-      <div class="card-track">${trackButton(a)}</div>
+      <div class="card-track card-actions">${watchButton(a)}${trackButton(a)}</div>
     </article>
   `;
 }
@@ -742,6 +786,133 @@ function setTab(tab) {
   ensureTabData(tab).then(() => render());
 }
 
+function setStreamStatus(message, kind = '') {
+  const el = $('#stream-status');
+  if (!el) return;
+  el.textContent = message || '';
+  el.className = `stream-status ${kind}`.trim();
+}
+
+function renderStreamEpisodes() {
+  const wrap = $('#stream-episodes');
+  if (!wrap) return;
+  const current = state.stream.currentEp;
+  wrap.innerHTML = (state.stream.episodes || []).map((ep) => `
+    <button type="button" class="stream-ep-btn ${current === ep.episode ? 'active' : ''}"
+      data-stream-ep="${ep.episode}" data-stream-hash="${ep.gate_hash}">
+      Ep ${ep.episode}
+    </button>
+  `).join('');
+  wrap.querySelectorAll('[data-stream-hash]').forEach((btn) => {
+    btn.addEventListener('click', () => playStreamEpisode(Number(btn.dataset.streamEp), btn.dataset.streamHash));
+  });
+}
+
+function closeStreamOverlay() {
+  const overlay = $('#stream-overlay');
+  const video = $('#stream-video');
+  if (video) {
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+  }
+  state.stream = {
+    open: false, anime: null, ahId: null, episodes: [],
+    currentEp: null, loading: false, error: null,
+  };
+  if (overlay) {
+    overlay.classList.add('hidden');
+    overlay.setAttribute('aria-hidden', 'true');
+  }
+}
+
+async function playStreamEpisode(episode, gateHash) {
+  const api = await waitForApi();
+  const video = $('#stream-video');
+  if (!api?.get_stream_sources || !video) return;
+
+  state.stream.currentEp = episode;
+  state.stream.loading = true;
+  renderStreamEpisodes();
+  setStreamStatus(`Loading episode ${episode}...`);
+  $('#stream-ep-label').textContent = `Episode ${episode}`;
+
+  const result = await api.get_stream_sources(gateHash);
+  state.stream.loading = false;
+
+  if (!result?.ok) {
+    setStreamStatus(result?.error || 'Could not load stream.', 'err');
+    return;
+  }
+
+  video.src = result.primary || result.sources?.[0];
+  video.load();
+  video.play().catch(() => {});
+  setStreamStatus(`Now playing episode ${episode} · via AnimeHeaven.me`);
+}
+
+async function openStreamOverlay(anime) {
+  const api = await waitForApi();
+  if (!api?.resolve_stream) {
+    showToast('Streaming API not available.', 'err');
+    return;
+  }
+
+  const overlay = $('#stream-overlay');
+  const title = titleOf(anime);
+  $('#stream-title').textContent = title;
+  $('#stream-subtitle').textContent = 'Finding on AnimeHeaven.me...';
+  setStreamStatus('Searching AnimeHeaven...');
+  overlay?.classList.remove('hidden');
+  overlay?.setAttribute('aria-hidden', 'false');
+
+  state.stream = {
+    open: true,
+    anime,
+    ahId: null,
+    episodes: [],
+    currentEp: null,
+    loading: true,
+    error: null,
+  };
+  renderStreamEpisodes();
+
+  const titles = [
+    anime.title_english,
+    anime.title,
+    anime.title_japanese,
+    ...(anime.title_synonyms || []),
+  ].filter(Boolean);
+
+  const resolved = await api.resolve_stream(anime.mal_id, titles);
+  state.stream.loading = false;
+
+  if (!resolved?.ok) {
+    setStreamStatus(resolved?.error || 'Show not found on AnimeHeaven.', 'err');
+    $('#stream-subtitle').textContent = 'No match found';
+    return;
+  }
+
+  state.stream.ahId = resolved.ah_id;
+  state.stream.episodes = resolved.episodes || [];
+  $('#stream-title').textContent = resolved.title || title;
+  $('#stream-subtitle').textContent = resolved.title_japanese || 'AnimeHeaven.me';
+  const ahLink = $('#stream-ah-link');
+  if (ahLink) {
+    ahLink.href = resolved.url || 'https://animeheaven.me';
+    ahLink.textContent = 'Open on AnimeHeaven.me';
+  }
+
+  if (!state.stream.episodes.length) {
+    setStreamStatus('Matched show but no episodes listed yet.', 'err');
+    return;
+  }
+
+  renderStreamEpisodes();
+  const latest = state.stream.episodes[0];
+  await playStreamEpisode(latest.episode, latest.gate_hash);
+}
+
 async function loadAppInfo() {
   try {
     const api = await waitForApi();
@@ -768,12 +939,33 @@ function init() {
   });
 
   document.body.addEventListener('click', (e) => {
+    const watchBtn = e.target.closest('[data-watch-mal-id]');
+    if (watchBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const malId = Number(watchBtn.dataset.watchMalId);
+      const anime = findAnimeById(malId) || {
+        mal_id: malId,
+        title: watchBtn.dataset.watchTitle,
+      };
+      openStreamOverlay(anime);
+      return;
+    }
+
     const trackBtn = e.target.closest('[data-track-id]');
     if (trackBtn) {
       e.preventDefault();
       e.stopPropagation();
       trackAnime(Number(trackBtn.dataset.trackId));
     }
+  });
+
+  $('#stream-close-btn')?.addEventListener('click', closeStreamOverlay);
+  $('#stream-overlay')?.addEventListener('click', (e) => {
+    if (e.target.id === 'stream-overlay') closeStreamOverlay();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && state.stream.open) closeStreamOverlay();
   });
 
   document.querySelectorAll('.tab').forEach((tab) => {

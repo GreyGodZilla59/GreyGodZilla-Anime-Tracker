@@ -22,6 +22,7 @@ python -m PyInstaller ^
   --add-data "assets;assets" ^
   --hidden-import requests ^
   --hidden-import webhook_manager ^
+  --hidden-import stream_manager ^
   app.py
 
 if %ERRORLEVEL% NEQ 0 (

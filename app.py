@@ -12,6 +12,7 @@ import requests
 import webview
 
 from version import APP_NAME, APP_PUBLISHER, APP_VERSION, app_window_title
+from stream_manager import StreamManager
 from webhook_manager import WebhookManager
 
 WINDOW_WIDTH = 1360
@@ -97,6 +98,7 @@ class AnimeApi:
         self._cache = {}
         self._session = requests.Session()
         self._session.headers.update({"User-Agent": f"{APP_NAME}/{APP_VERSION}"})
+        self._streams = StreamManager(self._session)
         self._webhooks = WebhookManager(self._session, self._request_with_retry)
         self._load_disk_cache()
         threading.Thread(target=self._warm_cache, daemon=True).start()
@@ -404,6 +406,44 @@ class AnimeApi:
 
     def check_webhook_now(self):
         return self._webhooks.check_now()
+
+    def search_stream(self, query, limit=12):
+        try:
+            return self._streams.search(query, limit=limit)
+        except Exception as exc:
+            return {"data": [], "error": str(exc)}
+
+    def resolve_stream(self, mal_id=None, titles=None):
+        title_list = list(titles or [])
+        mal_id = int(mal_id or 0)
+        if mal_id and not title_list:
+            payload = self._request_with_retry(f"/anime/{mal_id}")
+            item = payload.get("data") or {}
+            title_list = [
+                item.get("title_english"),
+                item.get("title"),
+                item.get("title_japanese"),
+                *(item.get("title_synonyms") or []),
+            ]
+        title_list = [t for t in title_list if t]
+        if not title_list:
+            return {"ok": False, "error": "No title to search AnimeHeaven"}
+        try:
+            return self._streams.resolve_for_titles(title_list)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def get_stream_anime(self, ah_id):
+        try:
+            return self._streams.get_anime(ah_id)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def get_stream_sources(self, gate_hash):
+        try:
+            return self._streams.get_stream_sources(gate_hash)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
 
     def _warm_cache(self):
         try:

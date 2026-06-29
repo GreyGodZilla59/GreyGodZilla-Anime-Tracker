@@ -441,6 +441,74 @@ body {
 .toast.ok { border-color: #1a3d28; color: var(--ok); }
 .toast.err { border-color: #4a1515; color: var(--err); }
 
+.watch-btn {
+  padding: 0.32rem 0.65rem; font-size: 0.7rem; font-weight: 700;
+  background: linear-gradient(135deg, #3d2200, #552800);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  color: var(--accent3); cursor: pointer; white-space: nowrap;
+}
+.watch-btn:hover { background: var(--accent); color: var(--text); border-color: var(--accent); }
+.watch-btn:disabled { opacity: 0.55; cursor: wait; }
+.card-actions, .detail-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+
+.stream-overlay {
+  position: fixed; inset: 0; z-index: 300;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex; align-items: center; justify-content: center;
+  padding: 1rem;
+}
+.stream-overlay.hidden { display: none; }
+.stream-panel {
+  width: min(980px, 100%); max-height: 92vh; overflow: auto;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: 0 20px 60px rgba(0,0,0,0.55);
+}
+.stream-header {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 1rem; padding: 1rem 1.1rem 0.5rem;
+  border-bottom: 1px solid var(--line-soft);
+}
+.stream-header h2 { font-size: 1.05rem; color: var(--accent3); }
+.stream-subtitle { font-size: 0.76rem; color: var(--muted); margin-top: 0.15rem; }
+.stream-close {
+  background: transparent; border: 1px solid var(--line-soft);
+  color: var(--text-soft); width: 2rem; height: 2rem; border-radius: var(--radius-sm);
+  cursor: pointer; font-size: 1rem;
+}
+.stream-close:hover { border-color: var(--accent); color: var(--accent); }
+.stream-status {
+  padding: 0.55rem 1.1rem; font-size: 0.78rem; color: var(--muted);
+}
+.stream-status.err { color: var(--err); }
+.stream-player-wrap {
+  padding: 0 1.1rem; background: #000;
+}
+.stream-video {
+  width: 100%; max-height: 52vh; background: #000; display: block;
+}
+.stream-meta {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 0.75rem; padding: 0.65rem 1.1rem; font-size: 0.74rem;
+}
+.stream-meta a { color: var(--accent); text-decoration: none; }
+.stream-meta a:hover { text-decoration: underline; }
+.stream-ep-label { color: var(--muted); }
+.stream-episodes {
+  display: flex; flex-wrap: wrap; gap: 0.4rem;
+  padding: 0 1.1rem 1.1rem;
+}
+.stream-ep-btn {
+  min-width: 2.4rem; padding: 0.35rem 0.55rem;
+  background: var(--inset); border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm); color: var(--text-soft);
+  font-size: 0.74rem; font-weight: 600; cursor: pointer;
+}
+.stream-ep-btn:hover { border-color: var(--accent); color: var(--accent); }
+.stream-ep-btn.active {
+  background: var(--tab-active); border-color: var(--accent);
+  color: var(--accent3);
+}
+
 .footer strong { color: var(--accent3); }
 .footer a { color: var(--accent); text-decoration: none; }
 .footer a:hover { text-decoration: underline; }
