@@ -6,10 +6,13 @@
   'use strict';
 
   const APP_NAME = 'Grey GodZilla Anime Tracker';
-  const APP_VERSION = '1.5.0';
+  const APP_VERSION = '1.5.1';
   const APP_PUBLISHER = 'Grey GodZilla';
   const ANILIST_URL = 'https://graphql.anilist.co';
   const AH_BASE = 'https://animeheaven.me';
+  const HTTP_TIMEOUT_MS = 25000;
+  const GQL_MAX_ATTEMPTS = 4;
+  const GQL_BASE_DELAY_MS = 450;
   const DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
   const SEASON_BY_MONTH = {
     1: 'WINTER', 2: 'WINTER', 3: 'WINTER',
@@ -191,12 +194,21 @@ fragment MediaFields on Media {
   }
 
   // ---------- HTTP (Capacitor native when available — bypasses CORS) ----------
-  async function httpRequest(url, options = {}) {
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function isRetryableStatus(status) {
+    return status === 408 || status === 425 || status === 429 || status >= 500;
+  }
+
+  async function httpRequestOnce(url, options = {}) {
     const method = (options.method || 'GET').toUpperCase();
     const headers = options.headers || {};
     const body = options.body;
+    const timeoutMs = Number(options.timeoutMs) || HTTP_TIMEOUT_MS;
 
-    // Capacitor 5+ CapacitorHttp
+    // Capacitor 5+ CapacitorHttp (native stack — more stable on mobile than WebView fetch)
     if (global.Capacitor && global.Capacitor.Plugins && global.Capacitor.Plugins.CapacitorHttp) {
       const Http = global.Capacitor.Plugins.CapacitorHttp;
       const res = await Http.request({
@@ -204,8 +216,8 @@ fragment MediaFields on Media {
         method,
         headers,
         data: body ? (typeof body === 'string' ? JSON.parse(body) : body) : undefined,
-        connectTimeout: 20000,
-        readTimeout: 20000,
+        connectTimeout: timeoutMs,
+        readTimeout: timeoutMs,
       });
       return {
         ok: res.status >= 200 && res.status < 300,
@@ -215,44 +227,117 @@ fragment MediaFields on Media {
       };
     }
 
-    const res = await fetch(url, {
-      method,
-      headers,
-      body: body || undefined,
-    });
-    return res;
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    try {
+      const res = await fetch(url, {
+        method,
+        headers,
+        body: body || undefined,
+        signal: controller ? controller.signal : undefined,
+      });
+      return res;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  async function httpRequest(url, options = {}) {
+    const attempts = Math.max(1, Number(options.attempts) || 1);
+    let lastErr = null;
+    for (let i = 0; i < attempts; i += 1) {
+      try {
+        const res = await httpRequestOnce(url, options);
+        if (res.ok || !isRetryableStatus(res.status) || i === attempts - 1) return res;
+        // Retry rate-limits / transient server errors
+        const delay = GQL_BASE_DELAY_MS * (2 ** i) + Math.floor(Math.random() * 200);
+        await sleep(delay);
+      } catch (err) {
+        lastErr = err;
+        if (i === attempts - 1) throw err;
+        const delay = GQL_BASE_DELAY_MS * (2 ** i) + Math.floor(Math.random() * 250);
+        await sleep(delay);
+      }
+    }
+    if (lastErr) throw lastErr;
+    throw new Error('http_request_failed');
   }
 
   async function gql(query, variables = {}) {
-    const res = await httpRequest(ANILIST_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ query, variables }),
-    });
-    if (!res.ok) {
-      return { data: null, error: `anilist_http_${res.status}` };
+    let lastError = null;
+    for (let attempt = 0; attempt < GQL_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const res = await httpRequest(ANILIST_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({ query, variables }),
+          attempts: 1,
+          timeoutMs: HTTP_TIMEOUT_MS,
+        });
+        if (!res.ok) {
+          lastError = `anilist_http_${res.status}`;
+          if (isRetryableStatus(res.status) && attempt < GQL_MAX_ATTEMPTS - 1) {
+            await sleep(GQL_BASE_DELAY_MS * (2 ** attempt) + Math.floor(Math.random() * 300));
+            continue;
+          }
+          return { data: null, error: lastError };
+        }
+        const json = await res.json();
+        if (json.errors && json.errors.length) {
+          const msg = json.errors[0].message || 'GraphQL error';
+          // Partial data can still be usable (e.g. one field failed)
+          if (json.data) return { data: json.data, error: msg };
+          lastError = msg;
+          if (/too many requests|rate.?limit|timeout|temporar/i.test(msg) && attempt < GQL_MAX_ATTEMPTS - 1) {
+            await sleep(GQL_BASE_DELAY_MS * (2 ** attempt) + 400);
+            continue;
+          }
+          return { data: null, error: lastError };
+        }
+        return { data: json.data, error: null };
+      } catch (err) {
+        lastError = String(err && err.message ? err.message : err);
+        if (attempt < GQL_MAX_ATTEMPTS - 1) {
+          await sleep(GQL_BASE_DELAY_MS * (2 ** attempt) + Math.floor(Math.random() * 350));
+          continue;
+        }
+      }
     }
-    const json = await res.json();
-    if (json.errors && json.errors.length) {
-      return { data: json.data || null, error: json.errors[0].message || 'GraphQL error' };
-    }
-    return { data: json.data, error: null };
+    return { data: null, error: lastError || 'anilist_unreachable' };
   }
 
-  // ---------- Memory + disk cache ----------
+  // ---------- Memory + disk cache (fresh + stale-while-revalidate) ----------
   const memCache = new Map();
-  const CACHE_TTL = 30 * 60 * 1000;
+  const CACHE_TTL = 45 * 60 * 1000; // prefer fresh for 45m
+  const CACHE_STALE_TTL = 7 * 24 * 60 * 60 * 1000; // keep usable offline for 7 days
 
-  function cacheGet(key) {
+  function cacheEntryGet(key) {
     const hit = memCache.get(key);
-    if (hit && Date.now() - hit.ts < CACHE_TTL) return hit.data;
+    if (hit) return hit;
     const disk = loadJSON(LS.cache, {});
     const entry = disk[key];
-    if (entry && Date.now() - entry.ts < CACHE_TTL * 4) {
+    if (entry && entry.data != null) {
       memCache.set(key, entry);
-      return entry.data;
+      return entry;
     }
     return null;
+  }
+
+  function cacheGet(key) {
+    const entry = cacheEntryGet(key);
+    if (entry && Date.now() - (entry.ts || 0) < CACHE_TTL) return entry.data;
+    return null;
+  }
+
+  /** Return cached payload even if expired (for offline / flaky AniList). */
+  function cacheGetStale(key) {
+    const entry = cacheEntryGet(key);
+    if (!entry || entry.data == null) return null;
+    if (Date.now() - (entry.ts || 0) > CACHE_STALE_TTL) return null;
+    return entry.data;
   }
 
   function cacheSet(key, data) {
@@ -262,11 +347,25 @@ fragment MediaFields on Media {
     disk[key] = entry;
     // cap size
     const keys = Object.keys(disk);
-    if (keys.length > 40) {
+    if (keys.length > 50) {
       keys.sort((a, b) => (disk[a].ts || 0) - (disk[b].ts || 0));
-      keys.slice(0, keys.length - 30).forEach((k) => delete disk[k]);
+      keys.slice(0, keys.length - 40).forEach((k) => delete disk[k]);
     }
     saveJSON(LS.cache, disk);
+  }
+
+  function withStaleFallback(key, live, error) {
+    const stale = cacheGetStale(key);
+    if (stale) {
+      return {
+        ...stale,
+        error: error || live?.error || 'stale_cache',
+        offline: true,
+        stale: true,
+        source: stale.source || 'anilist-cache',
+      };
+    }
+    return live;
   }
 
   function cacheClearSchedule() {
@@ -512,82 +611,105 @@ fragment MediaFields on Media {
     async get_bootstrap() {
       const cached = cacheGet('bootstrap');
       if (cached) return cached;
-      const now = new Date();
-      const dayStart = new Date(now);
-      dayStart.setHours(0, 0, 0, 0);
-      const dayEnd = new Date(dayStart);
-      dayEnd.setDate(dayEnd.getDate() + 1);
-      const season = SEASON_BY_MONTH[now.getMonth() + 1];
-      const next = NEXT_SEASON[season];
-      const nextYear = season === 'FALL' ? now.getFullYear() + 1 : now.getFullYear();
+      try {
+        const now = new Date();
+        const dayStart = new Date(now);
+        dayStart.setHours(0, 0, 0, 0);
+        const dayEnd = new Date(dayStart);
+        dayEnd.setDate(dayEnd.getDate() + 1);
+        const season = SEASON_BY_MONTH[now.getMonth() + 1];
+        const next = NEXT_SEASON[season];
+        const nextYear = season === 'FALL' ? now.getFullYear() + 1 : now.getFullYear();
 
-      const [todayPayload, nowPayload, upPayload] = await Promise.all([
-        airingSchedule(Math.floor(dayStart.getTime() / 1000) - 3600, Math.floor(dayEnd.getTime() / 1000) + 3600, 3),
-        collectSeason(season, now.getFullYear(), 2),
-        collectSeason(next, nextYear, 1),
-      ]);
+        const [todayPayload, nowPayload, upPayload] = await Promise.all([
+          airingSchedule(Math.floor(dayStart.getTime() / 1000) - 3600, Math.floor(dayEnd.getTime() / 1000) + 3600, 3),
+          collectSeason(season, now.getFullYear(), 2),
+          collectSeason(next, nextYear, 1),
+        ]);
 
-      const seen = new Map();
-      for (const item of todayPayload.data || []) {
-        const key = item.mal_id || item.anilist_id;
-        if (!seen.has(key)) seen.set(key, item);
+        const seen = new Map();
+        for (const item of todayPayload.data || []) {
+          const key = item.mal_id || item.anilist_id;
+          if (!seen.has(key)) seen.set(key, item);
+        }
+        const today = [...seen.values()].sort((a, b) =>
+          String(a.broadcast_time || '99').localeCompare(String(b.broadcast_time || '99')),
+        );
+        const result = {
+          now: nowPayload.data || [],
+          upcoming: upPayload.data || [],
+          today,
+          today_name: DAYS[now.getDay() === 0 ? 6 : now.getDay() - 1],
+          error: todayPayload.error || nowPayload.error || upPayload.error,
+          source: 'anilist',
+        };
+        const hasData = today.length || (result.now && result.now.length) || (result.upcoming && result.upcoming.length);
+        if (!hasData && result.error) {
+          return withStaleFallback('bootstrap', result, result.error);
+        }
+        cacheSet('bootstrap', result);
+        return result;
+      } catch (err) {
+        return withStaleFallback('bootstrap', {
+          now: [], upcoming: [], today: [], today_name: '', error: String(err.message || err), source: 'anilist',
+        }, String(err.message || err));
       }
-      const today = [...seen.values()].sort((a, b) =>
-        String(a.broadcast_time || '99').localeCompare(String(b.broadcast_time || '99')),
-      );
-      const result = {
-        now: nowPayload.data || [],
-        upcoming: upPayload.data || [],
-        today,
-        today_name: DAYS[now.getDay() === 0 ? 6 : now.getDay() - 1],
-        error: todayPayload.error || nowPayload.error || upPayload.error,
-        source: 'anilist',
-      };
-      cacheSet('bootstrap', result);
-      return result;
     },
 
     async get_weekly() {
       const cached = cacheGet('weekly');
       if (cached) return cached;
-      const now = new Date();
-      const start = new Date(now);
-      const day = (start.getDay() + 6) % 7; // mon=0
-      start.setDate(start.getDate() - day);
-      start.setHours(0, 0, 0, 0);
-      const end = new Date(start);
-      end.setDate(end.getDate() + 7);
-      const payload = await airingRange(start.getTime(), end.getTime(), 4, 6);
-      const schedule = Object.fromEntries(DAYS.map((d) => [d, []]));
-      const seen = Object.fromEntries(DAYS.map((d) => [d, new Set()]));
-      for (const item of payload.data || []) {
-        if (!item.airing_at) continue;
-        const dt = new Date(item.airing_at * 1000);
-        if (dt < start || dt >= end) continue;
-        const dayName = DAYS[dt.getDay() === 0 ? 6 : dt.getDay() - 1];
-        const key = `${item.mal_id}:${item.next_episode}`;
-        if (seen[dayName].has(key)) continue;
-        seen[dayName].add(key);
-        schedule[dayName].push({
-          ...item,
-          broadcast_day: dt.toLocaleDateString('en-US', { weekday: 'long' }),
-          broadcast_time: dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
-        });
+      try {
+        const now = new Date();
+        const start = new Date(now);
+        const day = (start.getDay() + 6) % 7; // mon=0
+        start.setDate(start.getDate() - day);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(start);
+        end.setDate(end.getDate() + 7);
+        const payload = await airingRange(start.getTime(), end.getTime(), 4, 6);
+        const schedule = Object.fromEntries(DAYS.map((d) => [d, []]));
+        const seen = Object.fromEntries(DAYS.map((d) => [d, new Set()]));
+        for (const item of payload.data || []) {
+          if (!item.airing_at) continue;
+          const dt = new Date(item.airing_at * 1000);
+          if (dt < start || dt >= end) continue;
+          const dayName = DAYS[dt.getDay() === 0 ? 6 : dt.getDay() - 1];
+          const key = `${item.mal_id}:${item.next_episode}`;
+          if (seen[dayName].has(key)) continue;
+          seen[dayName].add(key);
+          schedule[dayName].push({
+            ...item,
+            broadcast_day: dt.toLocaleDateString('en-US', { weekday: 'long' }),
+            broadcast_time: dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+          });
+        }
+        for (const d of DAYS) {
+          schedule[d].sort((a, b) => String(a.broadcast_time || '').localeCompare(String(b.broadcast_time || '')));
+        }
+        const total = DAYS.reduce((n, d) => n + schedule[d].length, 0);
+        const result = {
+          schedule,
+          week_start: start.toISOString().slice(0, 10),
+          week_end: new Date(end.getTime() - 1000).toISOString().slice(0, 10),
+          total,
+          error: payload.error,
+          source: 'anilist',
+          last_refreshed: new Date().toISOString(),
+        };
+        if (!total && payload.error) {
+          return withStaleFallback('weekly', result, payload.error);
+        }
+        cacheSet('weekly', result);
+        return result;
+      } catch (err) {
+        return withStaleFallback('weekly', {
+          schedule: Object.fromEntries(DAYS.map((d) => [d, []])),
+          total: 0,
+          error: String(err.message || err),
+          source: 'anilist',
+        }, String(err.message || err));
       }
-      for (const d of DAYS) {
-        schedule[d].sort((a, b) => String(a.broadcast_time || '').localeCompare(String(b.broadcast_time || '')));
-      }
-      const result = {
-        schedule,
-        week_start: start.toISOString().slice(0, 10),
-        week_end: new Date(end.getTime() - 1000).toISOString().slice(0, 10),
-        total: DAYS.reduce((n, d) => n + schedule[d].length, 0),
-        error: payload.error,
-        source: 'anilist',
-        last_refreshed: new Date().toISOString(),
-      };
-      cacheSet('weekly', result);
-      return result;
     },
 
     async get_monthly(year, month) {
@@ -598,90 +720,101 @@ fragment MediaFields on Media {
       const cached = cacheGet(key);
       if (cached) return cached;
 
-      const start = new Date(year, month - 1, 1);
-      const end = new Date(year, month, 1);
-      const daysInMonth = new Date(year, month, 0).getDate();
-      const airingPayload = await airingRange(start.getTime(), end.getTime(), 8, 6);
+      try {
+        const start = new Date(year, month - 1, 1);
+        const end = new Date(year, month, 1);
+        const daysInMonth = new Date(year, month, 0).getDate();
+        const airingPayload = await airingRange(start.getTime(), end.getTime(), 8, 6);
 
-      const releasesByDay = {};
-      const ongoingMap = new Map();
-      for (const item of airingPayload.data || []) {
-        if (!item.airing_at) continue;
-        const dt = new Date(item.airing_at * 1000);
-        if (dt.getFullYear() !== year || dt.getMonth() + 1 !== month) continue;
-        const day = dt.getDate();
-        const entry = {
-          ...item,
-          premiere_day: day,
-          broadcast_day: dt.toLocaleDateString('en-US', { weekday: 'long' }),
-          broadcast_time: dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
-          episode_label: item.next_episode ? `Ep ${item.next_episode}` : null,
-        };
-        (releasesByDay[String(day)] = releasesByDay[String(day)] || []).push(entry);
-        ongoingMap.set(item.mal_id || item.anilist_id, entry);
-      }
-      Object.keys(releasesByDay).forEach((d) => {
-        releasesByDay[d].sort((a, b) => String(a.broadcast_time || '').localeCompare(String(b.broadcast_time || '')));
-      });
-
-      const season = SEASON_BY_MONTH[month];
-      const seasons = [season];
-      if ([3, 6, 9, 12].includes(month)) seasons.push(NEXT_SEASON[season]);
-      if ([1, 4, 7, 10].includes(month)) {
-        const prev = Object.entries(NEXT_SEASON).find(([, v]) => v === season);
-        if (prev) seasons.push(prev[0]);
-      }
-      const combined = new Map();
-      for (const s of seasons) {
-        let y = year;
-        if (s === 'WINTER' && month === 12) y = year + 1;
-        if (s === 'FALL' && month === 1) y = year - 1;
-        const payload = await collectSeason(s, y, 2);
-        for (const item of payload.data || []) {
-          combined.set(item.mal_id || item.anilist_id, item);
+        const releasesByDay = {};
+        const ongoingMap = new Map();
+        for (const item of airingPayload.data || []) {
+          if (!item.airing_at) continue;
+          const dt = new Date(item.airing_at * 1000);
+          if (dt.getFullYear() !== year || dt.getMonth() + 1 !== month) continue;
+          const day = dt.getDate();
+          const entry = {
+            ...item,
+            premiere_day: day,
+            broadcast_day: dt.toLocaleDateString('en-US', { weekday: 'long' }),
+            broadcast_time: dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+            episode_label: item.next_episode ? `Ep ${item.next_episode}` : null,
+          };
+          (releasesByDay[String(day)] = releasesByDay[String(day)] || []).push(entry);
+          ongoingMap.set(item.mal_id || item.anilist_id, entry);
         }
-      }
+        Object.keys(releasesByDay).forEach((d) => {
+          releasesByDay[d].sort((a, b) => String(a.broadcast_time || '').localeCompare(String(b.broadcast_time || '')));
+        });
 
-      const premieres = [];
-      const startingSoon = [];
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      for (const item of combined.values()) {
-        if (!item.aired_from) continue;
-        const dt = new Date(item.aired_from);
-        if (Number.isNaN(dt.getTime())) continue;
-        if (dt.getFullYear() === year && dt.getMonth() + 1 === month) {
-          premieres.push({ ...item, premiere_day: dt.getDate() });
+        const season = SEASON_BY_MONTH[month];
+        const seasons = [season];
+        if ([3, 6, 9, 12].includes(month)) seasons.push(NEXT_SEASON[season]);
+        if ([1, 4, 7, 10].includes(month)) {
+          const prev = Object.entries(NEXT_SEASON).find(([, v]) => v === season);
+          if (prev) seasons.push(prev[0]);
         }
-        if (!item.airing && dt > today) {
-          const days = (dt - today) / 86400000;
-          if (days <= 45) {
-            startingSoon.push({ ...item, premiere_day: dt.getDate(), premiere_month: dt.getMonth() + 1 });
+        const combined = new Map();
+        for (const s of seasons) {
+          let y = year;
+          if (s === 'WINTER' && month === 12) y = year + 1;
+          if (s === 'FALL' && month === 1) y = year - 1;
+          const payload = await collectSeason(s, y, 2);
+          for (const item of payload.data || []) {
+            combined.set(item.mal_id || item.anilist_id, item);
           }
         }
-      }
-      premieres.sort((a, b) => (a.premiere_day || 99) - (b.premiere_day || 99));
-      const ongoing = [...ongoingMap.values()].sort((a, b) => (b.score || 0) - (a.score || 0));
-      const releaseCount = Object.values(releasesByDay).reduce((n, arr) => n + arr.length, 0);
 
-      const result = {
-        year,
-        month,
-        month_name: MONTH_NAMES[month],
-        days_in_month: daysInMonth,
-        premieres,
-        ongoing: ongoing.slice(0, 60),
-        starting_soon: startingSoon.slice(0, 20),
-        premiere_by_day: releasesByDay,
-        releases_by_day: releasesByDay,
-        broadcast_map: {},
-        release_count: releaseCount,
-        error: airingPayload.error,
-        source: 'anilist',
-        last_refreshed: new Date().toISOString(),
-      };
-      cacheSet(key, result);
-      return result;
+        const premieres = [];
+        const startingSoon = [];
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        for (const item of combined.values()) {
+          if (!item.aired_from) continue;
+          const dt = new Date(item.aired_from);
+          if (Number.isNaN(dt.getTime())) continue;
+          if (dt.getFullYear() === year && dt.getMonth() + 1 === month) {
+            premieres.push({ ...item, premiere_day: dt.getDate() });
+          }
+          if (!item.airing && dt > today) {
+            const days = (dt - today) / 86400000;
+            if (days <= 45) {
+              startingSoon.push({ ...item, premiere_day: dt.getDate(), premiere_month: dt.getMonth() + 1 });
+            }
+          }
+        }
+        premieres.sort((a, b) => (a.premiere_day || 99) - (b.premiere_day || 99));
+        const ongoing = [...ongoingMap.values()].sort((a, b) => (b.score || 0) - (a.score || 0));
+        const releaseCount = Object.values(releasesByDay).reduce((n, arr) => n + arr.length, 0);
+
+        const result = {
+          year,
+          month,
+          month_name: MONTH_NAMES[month],
+          days_in_month: daysInMonth,
+          premieres,
+          ongoing: ongoing.slice(0, 60),
+          starting_soon: startingSoon.slice(0, 20),
+          premiere_by_day: releasesByDay,
+          releases_by_day: releasesByDay,
+          broadcast_map: {},
+          release_count: releaseCount,
+          error: airingPayload.error,
+          source: 'anilist',
+          last_refreshed: new Date().toISOString(),
+        };
+        if (!releaseCount && !premieres.length && airingPayload.error) {
+          return withStaleFallback(key, result, airingPayload.error);
+        }
+        cacheSet(key, result);
+        return result;
+      } catch (err) {
+        return withStaleFallback(key, {
+          year, month, month_name: MONTH_NAMES[month], premieres: [], ongoing: [],
+          starting_soon: [], premiere_by_day: {}, releases_by_day: {}, release_count: 0,
+          error: String(err.message || err), source: 'anilist',
+        }, String(err.message || err));
+      }
     },
 
     async get_yearly(year) {
@@ -689,64 +822,82 @@ fragment MediaFields on Media {
       const key = `yearly:${year}`;
       const cached = cacheGet(key);
       if (cached) return cached;
-      const combined = new Map();
-      for (const q of ['WINTER', 'SPRING', 'SUMMER', 'FALL']) {
-        const payload = await collectSeason(q, year, 2);
-        for (const item of payload.data || []) {
-          combined.set(item.mal_id || item.anilist_id, item);
+      try {
+        const combined = new Map();
+        let lastErr = null;
+        for (const q of ['WINTER', 'SPRING', 'SUMMER', 'FALL']) {
+          const payload = await collectSeason(q, year, 2);
+          if (payload.error) lastErr = payload.error;
+          for (const item of payload.data || []) {
+            combined.set(item.mal_id || item.anilist_id, item);
+          }
         }
-      }
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const premieres = [];
-      const announced = [];
-      const airing = [];
-      const finished = [];
-      for (const item of combined.values()) {
-        if (item.airing) {
-          airing.push(item);
-          continue;
+        if (!combined.size && lastErr) {
+          return withStaleFallback(key, {
+            year, total: 0, premieres: [], announced_tba: [], airing: [], finished: [],
+            by_month: {}, by_quarter: { winter: [], spring: [], summer: [], fall: [] },
+            month_names: MONTH_NAMES, error: lastErr, source: 'anilist',
+          }, lastErr);
         }
-        if (!item.aired_from) {
-          if (year >= today.getFullYear()) announced.push(item);
-          continue;
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const premieres = [];
+        const announced = [];
+        const airing = [];
+        const finished = [];
+        for (const item of combined.values()) {
+          if (item.airing) {
+            airing.push(item);
+            continue;
+          }
+          if (!item.aired_from) {
+            if (year >= today.getFullYear()) announced.push(item);
+            continue;
+          }
+          const dt = new Date(item.aired_from);
+          if (dt.getFullYear() !== year) continue;
+          const status = (item.status || '').toLowerCase();
+          if (status.includes('finish')) finished.push(item);
+          else if (dt >= today) {
+            premieres.push({ ...item, premiere_month: dt.getMonth() + 1, premiere_day: dt.getDate() });
+          } else finished.push(item);
         }
-        const dt = new Date(item.aired_from);
-        if (dt.getFullYear() !== year) continue;
-        const status = (item.status || '').toLowerCase();
-        if (status.includes('finish')) finished.push(item);
-        else if (dt >= today) {
-          premieres.push({ ...item, premiere_month: dt.getMonth() + 1, premiere_day: dt.getDate() });
-        } else finished.push(item);
+        const byMonth = {};
+        for (const item of premieres) {
+          const m = item.premiere_month;
+          if (m) (byMonth[String(m)] = byMonth[String(m)] || []).push(item);
+        }
+        const byQuarter = { winter: [], spring: [], summer: [], fall: [] };
+        for (const item of combined.values()) {
+          if (!item.aired_from) continue;
+          const dt = new Date(item.aired_from);
+          if (dt.getFullYear() !== year) continue;
+          const q = SEASON_BY_MONTH[dt.getMonth() + 1].toLowerCase();
+          byQuarter[q].push(item);
+        }
+        const result = {
+          year,
+          total: combined.size,
+          premieres,
+          announced_tba: announced,
+          airing,
+          finished: finished.slice(0, 40),
+          by_month: byMonth,
+          by_quarter: byQuarter,
+          month_names: MONTH_NAMES,
+          last_refreshed: new Date().toISOString(),
+          source: 'anilist',
+          error: lastErr,
+        };
+        cacheSet(key, result);
+        return result;
+      } catch (err) {
+        return withStaleFallback(key, {
+          year, total: 0, premieres: [], announced_tba: [], airing: [], finished: [],
+          by_month: {}, by_quarter: { winter: [], spring: [], summer: [], fall: [] },
+          month_names: MONTH_NAMES, error: String(err.message || err), source: 'anilist',
+        }, String(err.message || err));
       }
-      const byMonth = {};
-      for (const item of premieres) {
-        const m = item.premiere_month;
-        if (m) (byMonth[String(m)] = byMonth[String(m)] || []).push(item);
-      }
-      const byQuarter = { winter: [], spring: [], summer: [], fall: [] };
-      for (const item of combined.values()) {
-        if (!item.aired_from) continue;
-        const dt = new Date(item.aired_from);
-        if (dt.getFullYear() !== year) continue;
-        const q = SEASON_BY_MONTH[dt.getMonth() + 1].toLowerCase();
-        byQuarter[q].push(item);
-      }
-      const result = {
-        year,
-        total: combined.size,
-        premieres,
-        announced_tba: announced,
-        airing,
-        finished: finished.slice(0, 40),
-        by_month: byMonth,
-        by_quarter: byQuarter,
-        month_names: MONTH_NAMES,
-        last_refreshed: new Date().toISOString(),
-        source: 'anilist',
-      };
-      cacheSet(key, result);
-      return result;
     },
 
     async search_media(query, media = 'all', limit = 24, type = '', status = '', orderBy = 'popularity', sort = 'desc', minScore = 0) {

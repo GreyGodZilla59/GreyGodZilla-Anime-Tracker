@@ -102,8 +102,16 @@ function updateStats() {
   };
   setText('#count-favorites', state.favorites.length);
   setText('#count-history', state.history.length);
-  setText('#stat-favorites', state.favorites.length);
-  setText('#stat-history', state.history.length);
+}
+
+function noteStale(data, label) {
+  if (!data) return;
+  if (data.stale || data.offline) {
+    setStatus('Offline cache', 'loading');
+    showToast(`${label}: using saved data (AniList blipped)`, '');
+  } else if (data.error) {
+    setStatus('Partial', 'loading');
+  }
 }
 
 function setSubheader(html) {
@@ -891,7 +899,7 @@ async function renderSettings() {
         <h3>About</h3>
         <p class="settings-hint">In-app name: <strong>Grey GodZilla Anime App</strong><br>
         Launcher icon name: <strong>GGZ Anime</strong><br>
-        Version: <strong id="settings-version">v1.5.0</strong></p>
+        Version: <strong id="settings-version">v1.5.1</strong></p>
       </section>
     </div>
   `);
@@ -1549,19 +1557,24 @@ async function loadBootstrap() {
   $('#count-now').textContent = data.now?.length ?? 0;
   $('#count-upcoming').textContent = data.upcoming?.length ?? 0;
   $('#count-daily').textContent = data.today?.length ?? 0;
-  $('#last-updated').textContent = `Updated: ${new Date().toLocaleString()}`;
+  $('#last-updated').textContent = data.stale
+    ? `Cached: ${new Date().toLocaleString()}`
+    : `Updated: ${new Date().toLocaleString()}`;
   updateStats();
 
-  if (data.error && !data.now?.length && !data.today?.length) {
+  const hasAny = (data.now?.length || 0) + (data.today?.length || 0) + (data.upcoming?.length || 0);
+  if (!hasAny && data.error) {
     throw new Error(String(data.error));
   }
 
-  setStatus('Ready', 'ready');
+  noteStale(data, 'Today');
+  if (!data.stale && !data.offline) setStatus('Ready', 'ready');
   render();
 
-  loadWeeklyBackground();
-  loadMonthlyBackground();
-  loadYearlyBackground();
+  // Stagger background loads so AniList is less likely to rate-limit on mobile data
+  setTimeout(() => loadWeeklyBackground(), 350);
+  setTimeout(() => loadMonthlyBackground(), 1200);
+  setTimeout(() => loadYearlyBackground(), 2200);
   startDailyRefreshWatcher();
 }
 
@@ -1573,15 +1586,25 @@ async function loadWeeklyBackground(force = false) {
 
   try {
     const api = await waitForApi();
-    state.weekly = await api.get_weekly();
+    const data = await api.get_weekly();
+    const total = Object.values(data.schedule || {}).reduce((n, arr) => n + arr.length, 0);
+    if (!total && data.error && !data.stale && !state.weekly) {
+      throw new Error(String(data.error));
+    }
+    state.weekly = data;
     state.loaded.add('weekly');
-    const total = Object.values(state.weekly.schedule || {}).reduce((n, arr) => n + arr.length, 0);
     $('#count-weekly').textContent = total;
     updateStats();
+    noteStale(data, 'Week');
     if (state.tab === 'weekly') render();
-    setStatus('Ready', 'ready');
+    if (!data.stale && !data.offline) setStatus('Ready', 'ready');
   } catch (err) {
-    if (state.tab === 'weekly') showError(`Weekly schedule failed: ${err.message}`);
+    if (state.tab === 'weekly' && !state.weekly) {
+      showError(`Weekly schedule failed: ${err.message}`);
+    } else {
+      showToast(`Week sync: ${err.message}`, 'err');
+      setStatus('Ready', 'ready');
+    }
   } finally {
     state.loading.delete('weekly');
   }
@@ -1594,15 +1617,23 @@ async function loadMonthlyBackground(force = false) {
 
   try {
     const api = await waitForApi();
-    state.monthly = await api.get_monthly();
+    const data = await api.get_monthly();
+    const count = data.release_count || data.premieres?.length || 0;
+    if (!count && data.error && !data.stale && !state.monthly) {
+      throw new Error(String(data.error));
+    }
+    state.monthly = data;
     state.loaded.add('monthly');
-    $('#count-monthly').textContent = state.monthly.release_count
-      || state.monthly.premieres?.length
-      || 0;
+    $('#count-monthly').textContent = count;
     updateStats();
+    noteStale(data, 'Month');
     if (state.tab === 'monthly') render();
   } catch (err) {
-    if (state.tab === 'monthly') showError(`Monthly view failed: ${err.message}`);
+    if (state.tab === 'monthly' && !state.monthly) {
+      showError(`Monthly view failed: ${err.message}`);
+    } else {
+      showToast(`Month sync: ${err.message}`, 'err');
+    }
   } finally {
     state.loading.delete('monthly');
   }
@@ -1614,14 +1645,23 @@ async function loadYearlyBackground(force = false) {
 
   try {
     const api = await waitForApi();
-    state.yearly = await api.get_yearly(state.yearlyYear);
+    const data = await api.get_yearly(state.yearlyYear);
+    const total = (data.premieres?.length || 0) + (data.announced_tba?.length || 0);
+    if (!total && !data.total && data.error && !data.stale && !state.yearly) {
+      throw new Error(String(data.error));
+    }
+    state.yearly = data;
     state.loaded.add('yearly');
-    const total = (state.yearly.premieres?.length || 0) + (state.yearly.announced_tba?.length || 0);
-    $('#count-yearly').textContent = total || state.yearly.total || '—';
+    $('#count-yearly').textContent = total || data.total || '—';
     updateStats();
+    noteStale(data, 'Year');
     if (state.tab === 'yearly') render();
   } catch (err) {
-    if (state.tab === 'yearly') showError(`Yearly view failed: ${err.message}`);
+    if (state.tab === 'yearly' && !state.yearly) {
+      showError(`Yearly view failed: ${err.message}`);
+    } else {
+      showToast(`Year sync: ${err.message}`, 'err');
+    }
   } finally {
     state.loading.delete('yearly');
   }
@@ -1708,17 +1748,23 @@ function startDailyRefreshWatcher() {
 }
 
 async function ensureTabData(tab) {
-  if (tab === 'weekly' && !state.weekly) {
-    showLoading('Loading weekly schedule...');
-    await loadWeeklyBackground();
-  }
-  if (tab === 'monthly' && !state.monthly) {
-    showLoading('Loading monthly calendar...');
-    await loadMonthlyBackground();
-  }
-  if (tab === 'yearly' && !state.yearly) {
-    showLoading(`Loading ${state.yearlyYear} releases...`);
-    await loadYearlyBackground(true);
+  try {
+    if (tab === 'weekly' && !state.weekly) {
+      showLoading('Loading weekly schedule...');
+      await loadWeeklyBackground();
+    }
+    if (tab === 'monthly' && !state.monthly) {
+      showLoading('Loading monthly calendar...');
+      await loadMonthlyBackground();
+    }
+    if (tab === 'yearly' && !state.yearly) {
+      showLoading(`Loading ${state.yearlyYear} releases...`);
+      await loadYearlyBackground(true);
+    }
+  } catch (err) {
+    // Keep previous tab content when possible — don't hard-crash on flaky AniList
+    if (!state.bootstrap) showError(err.message || 'Connection failed');
+    else showToast(err.message || 'Could not load tab', 'err');
   }
 }
 
@@ -1728,7 +1774,12 @@ function setTab(tab) {
     t.classList.toggle('active', t.dataset.tab === tab);
   });
 
-  ensureTabData(tab).then(() => render());
+  ensureTabData(tab)
+    .then(() => render())
+    .catch((err) => {
+      if (!state.bootstrap) showError(err.message || 'Connection failed');
+      else showToast(err.message || 'Tab load failed', 'err');
+    });
 }
 
 function setStreamStatus(message, kind = '') {
