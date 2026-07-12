@@ -28,7 +28,7 @@ const state = {
   searchSource: '',
   searchRequestId: 0,
   filters: {
-    media: 'anime',
+    media: 'all',
     type: 'any',
     status: 'any',
     order_by: 'popularity',
@@ -249,7 +249,7 @@ function actionButtons(a) {
 function metaChips(a) {
   const chips = [];
   if (a.type) chips.push(`<span class="meta-chip">${escapeHtml(a.type)}</span>`);
-  if (a.media && a.media !== 'anime' && a.media !== (a.type || '').toLowerCase()) {
+  if (a.media) {
     chips.push(`<span class="meta-chip media-chip">${escapeHtml(a.media)}</span>`);
   }
   if (a.episodes) chips.push(`<span class="meta-chip">${a.episodes} eps</span>`);
@@ -1199,16 +1199,25 @@ function sortForOrder(orderBy) {
 }
 
 function syncFormatFilterOptions() {
-  const media = $('#filter-media')?.value || 'anime';
+  const media = $('#filter-media')?.value || 'all';
   const typeSel = $('#filter-type');
   if (!typeSel) return;
-  const options = media === 'anime' ? ANIME_TYPE_OPTIONS : MANGA_TYPE_OPTIONS;
+  let options;
+  if (media === 'anime') options = ANIME_TYPE_OPTIONS;
+  else if (media === 'all') {
+    options = [
+      ['any', 'All formats'],
+      ...ANIME_TYPE_OPTIONS.filter(([v]) => v !== 'any'),
+      ...MANGA_TYPE_OPTIONS.filter(([v]) => v !== 'any'),
+    ];
+  } else {
+    options = MANGA_TYPE_OPTIONS;
+  }
   const prev = typeSel.value;
   typeSel.innerHTML = options.map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
-  // Keep selection when still valid; otherwise default to media family type.
   if (options.some(([v]) => v === prev)) {
     typeSel.value = prev;
-  } else if (media !== 'anime' && options.some(([v]) => v === media)) {
+  } else if (['manhwa', 'webtoon', 'manhua', 'novel'].includes(media) && options.some(([v]) => v === media)) {
     typeSel.value = media;
   } else {
     typeSel.value = 'any';
@@ -1224,7 +1233,7 @@ function syncFormatFilterOptions() {
 
 function readSearchFilters() {
   state.filters = {
-    media: $('#filter-media')?.value || 'anime',
+    media: $('#filter-media')?.value || 'all',
     type: $('#filter-type')?.value || 'any',
     status: $('#filter-status')?.value || 'any',
     order_by: $('#filter-order')?.value || 'popularity',
@@ -1270,9 +1279,9 @@ async function runDatabaseSearch(forceTab = true) {
   setStatus('Searching...', 'loading');
 
   try {
-    // For manga family media pickers, force type when format is "any".
+    // Only force type for country-based media (manhwa/manhua/webtoon).
     let typeParam = filters.type === 'any' ? null : filters.type;
-    if (!typeParam && filters.media !== 'anime') {
+    if (!typeParam && ['manhwa', 'webtoon', 'manhua', 'novel'].includes(filters.media)) {
       typeParam = filters.media;
     }
     const opts = {
@@ -1755,10 +1764,50 @@ async function playStreamEpisode(episode, gateHash) {
     resumeAt = 0;
   }
 
-  const src = result.playback_url || result.primary || result.sources?.[0];
-  video.removeAttribute('crossorigin');
-  video.src = src;
-  video.load();
+  const candidates = [];
+  const pushSrc = (u) => {
+    if (u && !candidates.includes(u)) candidates.push(u);
+  };
+  pushSrc(result.playback_url);
+  pushSrc(result.primary);
+  (result.sources || []).forEach(pushSrc);
+
+  if (!candidates.length) {
+    setStreamStatus('No playable sources returned.', 'err');
+    return;
+  }
+
+  let srcIndex = 0;
+  const tryPlay = async (idx) => {
+    const src = candidates[idx];
+    if (!src) {
+      setStreamStatus('Playback failed — try another episode or Open on AnimeHeaven.me', 'err');
+      return;
+    }
+    video.removeAttribute('crossorigin');
+    video.setAttribute('playsinline', '');
+    video.setAttribute('webkit-playsinline', '');
+    video.src = src;
+    video.load();
+    try {
+      await video.play();
+      if (!resumeAt) setStreamStatus(`Now playing episode ${episode} · via AnimeHeaven.me`);
+      startProgressTracking();
+    } catch {
+      setStreamStatus(resumeAt ? 'Press play to resume where you left off.' : 'Press play to start — stream is ready.', '');
+      startProgressTracking();
+    }
+  };
+
+  video.onerror = () => {
+    srcIndex += 1;
+    if (srcIndex < candidates.length) {
+      setStreamStatus(`Retrying stream source ${srcIndex + 1}/${candidates.length}...`);
+      tryPlay(srcIndex);
+    } else {
+      setStreamStatus('Playback failed — try another episode or open on AnimeHeaven.me', 'err');
+    }
+  };
 
   video.onloadedmetadata = () => {
     if (resumeAt > 0 && resumeAt < (video.duration || Infinity) - 15) {
@@ -1767,14 +1816,7 @@ async function playStreamEpisode(episode, gateHash) {
     }
   };
 
-  try {
-    await video.play();
-    if (!resumeAt) setStreamStatus(`Now playing episode ${episode} · via AnimeHeaven.me`);
-    startProgressTracking();
-  } catch {
-    setStreamStatus(resumeAt ? 'Press play to resume where you left off.' : 'Press play to start — stream is ready.', '');
-    startProgressTracking();
-  }
+  await tryPlay(0);
 }
 
 async function openStreamOverlay(anime) {

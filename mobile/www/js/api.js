@@ -6,7 +6,7 @@
   'use strict';
 
   const APP_NAME = 'Grey GodZilla Anime Tracker';
-  const APP_VERSION = '1.4.0-android';
+  const APP_VERSION = '1.4.1-android';
   const APP_PUBLISHER = 'Grey GodZilla';
   const ANILIST_URL = 'https://graphql.anilist.co';
   const AH_BASE = 'https://animeheaven.me';
@@ -692,10 +692,39 @@ fragment MediaFields on Media {
       return result;
     },
 
-    async search_media(query, media = 'anime', limit = 24, type = '', status = '', orderBy = 'popularity', sort = 'desc', minScore = 0) {
+    async search_media(query, media = 'all', limit = 24, type = '', status = '', orderBy = 'popularity', sort = 'desc', minScore = 0) {
       query = String(query || '').trim();
-      media = String(media || 'anime').toLowerCase();
+      media = String(media || 'all').toLowerCase();
+      if (['any', 'everything', '*'].includes(media)) media = 'all';
       if (query.length < 2) return { data: [], query, media, source: 'anilist' };
+
+      // Search both anime + manga (includes manhwa/manhua)
+      if (media === 'all') {
+        const half = Math.max(8, Math.min(24, Math.floor((Number(limit) || 24) / 2) + 2));
+        const animeType = ['tv', 'movie', 'ova', 'ona', 'special'].includes(String(type || '').toLowerCase()) ? type : '';
+        const mangaType = ['manga', 'manhwa', 'manhua', 'webtoon', 'novel', 'one_shot', 'lightnovel'].includes(String(type || '').toLowerCase()) ? type : '';
+        const [animeRes, mangaRes] = await Promise.all([
+          this.search_media(query, 'anime', half, animeType, status, orderBy, sort, minScore),
+          this.search_media(query, 'manga', half, mangaType, status, orderBy, sort, minScore),
+        ]);
+        const merged = [];
+        const seen = new Set();
+        for (const item of [...(animeRes.data || []), ...(mangaRes.data || [])]) {
+          const key = item.anilist_id || item.mal_id || item.title;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          merged.push(item);
+        }
+        merged.sort((a, b) => (b.score || 0) - (a.score || 0) || (b.popularity || 0) - (a.popularity || 0));
+        return {
+          data: merged.slice(0, Math.min(50, Number(limit) || 24)),
+          query,
+          media: 'all',
+          source: 'anilist',
+          error: (!animeRes.data || !animeRes.data.length) ? (animeRes.error || mangaRes.error) : null,
+        };
+      }
+
       const cacheKey = `search:${media}:${query}:${type}:${status}:${orderBy}:${limit}`;
       const cached = cacheGet(cacheKey);
       if (cached) return cached;
@@ -709,8 +738,9 @@ fragment MediaFields on Media {
         if (media === 'manhwa' || media === 'webtoon' || typeKey === 'manhwa' || typeKey === 'webtoon') country = 'KR';
         else if (media === 'manhua' || typeKey === 'manhua') country = 'CN';
         else if (typeKey === 'novel' || typeKey === 'lightnovel' || media === 'novel') format = 'NOVEL';
-        else if (typeKey === 'one_shot') format = 'ONE_SHOT';
+        else if (typeKey === 'one_shot' || typeKey === 'oneshot') format = 'ONE_SHOT';
         else if (typeKey === 'manga') format = 'MANGA';
+        // media=manga + type any/empty → no format filter (all print media)
       } else {
         const map = { tv: 'TV', movie: 'MOVIE', ova: 'OVA', ona: 'ONA', special: 'SPECIAL' };
         if (map[typeKey]) format = map[typeKey];
@@ -721,7 +751,7 @@ fragment MediaFields on Media {
         upcoming: 'NOT_YET_RELEASED',
       };
       const statusFilter = statusMap[String(status || '').toLowerCase()] || null;
-      const sortList = ['SEARCH_MATCH', orderBy === 'score' ? 'SCORE_DESC' : orderBy === 'title' ? 'TITLE_ROMAJI' : 'POPULARITY_DESC'];
+      const sortList = ['SEARCH_MATCH', orderBy === 'score' ? 'SCORE_DESC' : orderBy === 'title' ? 'TITLE_ROMAJI' : orderBy === 'start_date' ? 'START_DATE_DESC' : 'POPULARITY_DESC'];
 
       const queryGql = MEDIA_FRAGMENT + `
         query ($search: String, $type: MediaType, $perPage: Int, $sort: [MediaSort], $format: MediaFormat, $status: MediaStatus, $countryOfOrigin: CountryCode, $isAdult: Boolean) {
@@ -906,11 +936,13 @@ fragment MediaFields on Media {
         const titleMatch = html.match(/class='infotitle c'>([^<]+)</i);
         const jpMatch = html.match(/class='infotitlejp c'>([^<]+)</i);
         const episodes = [];
-        const epRe = /gatea\("([a-f0-9]+)"\)[\s\S]*?watch2 bc[^>]*>(\d+)/gi;
+        const byEp = new Map();
+        const epRe = /gatea\(["']([a-f0-9]+)["']\)[\s\S]{0,400}?watch2[^>]*>(\d+)/gi;
         let m;
         while ((m = epRe.exec(html)) !== null) {
-          episodes.push({ episode: Number(m[2]), gate_hash: m[1] });
+          byEp.set(Number(m[2]), { episode: Number(m[2]), gate_hash: m[1] });
         }
+        episodes.push(...byEp.values());
         episodes.sort((a, b) => b.episode - a.episode);
         return {
           ok: true,
@@ -935,11 +967,13 @@ fragment MediaFields on Media {
         const html = await ahFetch(`anime.php?${ahId}`);
         const titleMatch = html.match(/class='infotitle c'>([^<]+)</i);
         const episodes = [];
-        const epRe = /gatea\("([a-f0-9]+)"\)[\s\S]*?watch2 bc[^>]*>(\d+)/gi;
+        const byEp = new Map();
+        const epRe = /gatea\(["']([a-f0-9]+)["']\)[\s\S]{0,400}?watch2[^>]*>(\d+)/gi;
         let m;
         while ((m = epRe.exec(html)) !== null) {
-          episodes.push({ episode: Number(m[2]), gate_hash: m[1] });
+          byEp.set(Number(m[2]), { episode: Number(m[2]), gate_hash: m[1] });
         }
+        episodes.push(...byEp.values());
         episodes.sort((a, b) => b.episode - a.episode);
         return {
           ok: true,
@@ -955,40 +989,62 @@ fragment MediaFields on Media {
     },
 
     async get_stream_sources(gateHash) {
+      gateHash = String(gateHash || '').trim();
+      if (!gateHash) return { ok: false, error: 'Missing episode key' };
       try {
-        // Native HTTP can set cookies; browser fetch may not.
         const url = `${AH_BASE}/gate.php`;
+        const headers = {
+          Accept: 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-US,en;q=0.9',
+          Referer: `${AH_BASE}/`,
+          Origin: AH_BASE,
+          Cookie: `key=${gateHash}`,
+          'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
+        };
+
+        let html = '';
+        // Prefer Capacitor native HTTP (bypasses CORS, can send Cookie)
         if (global.Capacitor && global.Capacitor.Plugins && global.Capacitor.Plugins.CapacitorHttp) {
           const Http = global.Capacitor.Plugins.CapacitorHttp;
+          try {
+            await Http.request({ url: `${AH_BASE}/`, method: 'GET', headers: { ...headers } });
+          } catch { /* warm-up optional */ }
           const res = await Http.request({
             url,
             method: 'GET',
-            headers: {
-              Referer: `${AH_BASE}/`,
-              Cookie: `key=${gateHash}`,
-              'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
-            },
+            headers,
+            connectTimeout: 25000,
+            readTimeout: 25000,
           });
-          const html = typeof res.data === 'string' ? res.data : String(res.data || '');
-          const sources = [];
-          const re = /<source src='([^']+)'/g;
-          let m;
-          while ((m = re.exec(html)) !== null) {
-            if (!m[1].includes('&error')) sources.push(m[1]);
-          }
-          if (!sources.length) return { ok: false, error: 'No stream found for this episode' };
-          return { ok: true, sources, primary: sources[0], playback_url: sources[0] };
+          html = typeof res.data === 'string' ? res.data : String(res.data || '');
+        } else {
+          // WebView fetch fallback (may fail CORS on some builds)
+          const res = await httpRequest(url, { method: 'GET', headers });
+          html = await res.text();
         }
 
-        // Fallback: open gate via cookie injection is limited in browsers.
-        // Return AH page URL so UI can open externally if needed.
+        const sources = [];
+        const re = /<source[^>]+src=['"]([^'"]+)['"]/gi;
+        let m;
+        while ((m = re.exec(html)) !== null) {
+          const src = m[1];
+          if (/[&?]error\d*/i.test(src)) continue;
+          if (!sources.includes(src)) sources.push(src);
+        }
+        if (!sources.length) {
+          return {
+            ok: false,
+            error: 'No stream found for this episode — try Open on AnimeHeaven.me',
+            external: `${AH_BASE}/gate.php`,
+          };
+        }
+        return { ok: true, sources, primary: sources[0], playback_url: sources[0], referer: `${AH_BASE}/` };
+      } catch (e) {
         return {
           ok: false,
-          error: 'In-app stream proxy limited on this build — use Open on AnimeHeaven, or rebuild with CapacitorHttp.',
+          error: String(e.message || e),
           external: `${AH_BASE}/gate.php`,
         };
-      } catch (e) {
-        return { ok: false, error: String(e.message || e) };
       }
     },
 

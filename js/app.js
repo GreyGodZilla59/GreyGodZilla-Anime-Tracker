@@ -1,5 +1,12 @@
 const DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 const DAY_LABELS = { monday: 'Mon', tuesday: 'Tue', wednesday: 'Wed', thursday: 'Thu', friday: 'Fri', saturday: 'Sat', sunday: 'Sun' };
+const WEEK_COL_WIDTH_KEY = 'weekColWidths';
+const DEFAULT_WEEK_COL_WIDTH = 168;
+const MIN_WEEK_COL_WIDTH = 100;
+const MAX_WEEK_COL_WIDTH = 480;
+
+const CURRENT_YEAR = new Date().getFullYear();
+const DAILY_REFRESH_CHECK_MS = 30 * 60 * 1000;
 
 const state = {
   tab: 'daily',
@@ -7,9 +14,26 @@ const state = {
   bootstrap: null,
   weekly: null,
   monthly: null,
+  yearly: null,
+  yearlyYear: CURRENT_YEAR,
+  refreshDate: null,
   season: { now: null, upcoming: null },
   webhook: { config: null, status: null },
   watchlist: [],
+  favorites: [],
+  history: [],
+  searchResults: null,
+  searchLoading: false,
+  searchError: null,
+  searchSource: '',
+  searchRequestId: 0,
+  filters: {
+    media: 'all',
+    type: 'any',
+    status: 'any',
+    order_by: 'popularity',
+    min_score: 0,
+  },
   stream: {
     open: false,
     anime: null,
@@ -18,6 +42,7 @@ const state = {
     currentEp: null,
     loading: false,
     error: null,
+    progressTimer: null,
   },
   loading: new Set(),
   loaded: new Set(),
@@ -71,20 +96,30 @@ function setStatus(text, kind = '') {
 
 function updateStats() {
   const daily = state.bootstrap?.today?.length ?? '—';
-  const now = state.season.now?.length ?? state.bootstrap?.now?.length ?? '—';
-  const upcoming = state.season.upcoming?.length ?? state.bootstrap?.upcoming?.length ?? '—';
   const weeklyTotal = state.weekly
-    ? Object.values(state.weekly.schedule || {}).reduce((n, arr) => n + arr.length, 0)
+    ? (state.weekly.total
+      || Object.values(state.weekly.schedule || {}).reduce((n, arr) => n + arr.length, 0))
     : '—';
   const monthlyTotal = state.monthly
-    ? (state.monthly.premieres?.length || 0) + (state.monthly.ongoing?.length || 0)
+    ? (state.monthly.release_count
+      || (state.monthly.premieres?.length || 0) + (state.monthly.ongoing?.length || 0))
+    : '—';
+  const yearlyTotal = state.yearly
+    ? (state.yearly.premieres?.length || 0) + (state.yearly.announced_tba?.length || 0)
     : '—';
 
   $('#stat-daily').textContent = daily;
   $('#stat-weekly').textContent = weeklyTotal;
   $('#stat-monthly').textContent = monthlyTotal;
-  $('#stat-now').textContent = now;
-  $('#stat-upcoming').textContent = upcoming;
+  $('#stat-yearly').textContent = yearlyTotal;
+  const favEl = $('#stat-favorites');
+  const histEl = $('#stat-history');
+  if (favEl) favEl.textContent = state.favorites.length;
+  if (histEl) histEl.textContent = state.history.length;
+  const countFav = $('#count-favorites');
+  const countHist = $('#count-history');
+  if (countFav) countFav.textContent = state.favorites.length;
+  if (countHist) countHist.textContent = state.history.length;
 }
 
 function setSubheader(html) {
@@ -138,6 +173,14 @@ function isTracked(malId) {
   return state.watchlist.some((w) => Number(w.mal_id) === Number(malId));
 }
 
+function isFavorite(malId) {
+  return state.favorites.some((f) => Number(f.mal_id) === Number(malId));
+}
+
+function isCompleted(malId) {
+  return state.history.some((h) => Number(h.mal_id) === Number(malId));
+}
+
 function findAnimeById(malId) {
   const id = Number(malId);
   const pools = [
@@ -149,7 +192,14 @@ function findAnimeById(malId) {
     state.monthly?.premieres,
     state.monthly?.ongoing,
     state.monthly?.starting_soon,
+    state.yearly?.premieres,
+    state.yearly?.announced_tba,
+    state.yearly?.airing,
+    state.yearly?.finished,
     state.watchlist,
+    state.favorites,
+    state.history,
+    state.searchResults,
   ];
   if (state.weekly?.schedule) {
     pools.push(...Object.values(state.weekly.schedule));
@@ -163,27 +213,51 @@ function findAnimeById(malId) {
   return null;
 }
 
+function isPrintMedia(a) {
+  const media = (a?.media || 'anime').toLowerCase();
+  return media !== 'anime';
+}
+
 function trackButton(a) {
-  if (!a.mal_id) return '';
+  if (!a.mal_id || isPrintMedia(a)) return '';
   const tracked = isTracked(a.mal_id);
   return `<button type="button" class="track-btn ${tracked ? 'tracked' : ''}" data-track-id="${a.mal_id}" title="Notify via webhook when a new episode releases">${tracked ? '✓ Tracked' : '+ Track'}</button>`;
 }
 
-function watchButton(a) {
+function favoriteButton(a) {
   if (!a.mal_id) return '';
+  const fav = isFavorite(a.mal_id);
+  return `<button type="button" class="fav-btn ${fav ? 'favorited' : ''}" data-fav-id="${a.mal_id}" title="${fav ? 'Remove from favorites' : 'Add to favorites'}">${fav ? '★ Favorited' : '☆ Favorite'}</button>`;
+}
+
+function completeButton(a) {
+  if (!a.mal_id) return '';
+  const done = isCompleted(a.mal_id);
+  return `<button type="button" class="complete-btn ${done ? 'completed' : ''}" data-complete-id="${a.mal_id}" title="${done ? 'Remove from history' : 'Mark as completed'}">${done ? '✓ Completed' : 'Mark Done'}</button>`;
+}
+
+function watchButton(a) {
+  if (!a.mal_id || isPrintMedia(a)) return '';
   const title = escapeHtml(titleOf(a));
   return `<button type="button" class="watch-btn" data-watch-mal-id="${a.mal_id}" data-watch-title="${title}" title="Stream on AnimeHeaven.me">▶ Watch</button>`;
 }
 
 function actionButtons(a) {
-  return `<div class="detail-actions">${watchButton(a)}${trackButton(a)}</div>`;
+  return `<div class="detail-actions">${watchButton(a)}${favoriteButton(a)}${completeButton(a)}${trackButton(a)}</div>`;
 }
 
 function metaChips(a) {
   const chips = [];
   if (a.type) chips.push(`<span class="meta-chip">${escapeHtml(a.type)}</span>`);
+  if (a.media) {
+    chips.push(`<span class="meta-chip media-chip">${escapeHtml(a.media)}</span>`);
+  }
   if (a.episodes) chips.push(`<span class="meta-chip">${a.episodes} eps</span>`);
-  if (a.airing) chips.push('<span class="meta-chip airing">Airing</span>');
+  if (a.chapters) chips.push(`<span class="meta-chip">${a.chapters} ch</span>`);
+  if (a.volumes) chips.push(`<span class="meta-chip">${a.volumes} vol</span>`);
+  if (a.airing || a.publishing) {
+    chips.push(`<span class="meta-chip airing">${isPrintMedia(a) ? 'Publishing' : 'Airing'}</span>`);
+  }
   if (a.broadcast_time) chips.push(`<span class="meta-chip time">${escapeHtml(a.broadcast_time)} JST</span>`);
   if (a.broadcast_day) chips.push(`<span class="meta-chip accent">${escapeHtml(a.broadcast_day)}</span>`);
   (a.genres || []).slice(0, 3).forEach((g) => chips.push(`<span class="meta-chip">${escapeHtml(g)}</span>`));
@@ -219,10 +293,29 @@ function detailRow(a) {
 function cardHtml(a) {
   const title = escapeHtml(titleOf(a));
   const sub = a.title_japanese ? escapeHtml(a.title_japanese) : '';
-  const badge = a.airing ? 'badge-airing' : 'badge-upcoming';
-  const label = a.airing ? 'Airing' : 'Upcoming';
+  const print = isPrintMedia(a);
+  let badge = 'badge-upcoming';
+  let label = 'Upcoming';
+  if (print) {
+    const t = (a.type || a.media || 'Manga').toString();
+    badge = 'badge-print';
+    label = t;
+    if (a.airing || a.publishing) {
+      badge = 'badge-airing';
+      label = 'Publishing';
+    } else if ((a.status || '').toLowerCase().includes('finish') || (a.status || '').toLowerCase().includes('complete')) {
+      badge = 'badge-done';
+      label = 'Finished';
+    }
+  } else if (a.airing) {
+    badge = 'badge-airing';
+    label = 'Airing';
+  }
   const score = a.score ? `<span class="badge badge-score">★ ${a.score}</span>` : '';
   const air = a.aired_from ? formatDate(a.aired_from) : 'TBA';
+  const countChip = a.episodes
+    ? `${a.episodes} eps`
+    : (a.chapters ? `${a.chapters} ch` : (a.volumes ? `${a.volumes} vol` : ''));
 
   return `
     <article class="card">
@@ -230,7 +323,7 @@ function cardHtml(a) {
         <div class="card-image-wrap">
           <img class="card-image" src="${a.image || ''}" alt="${title}" loading="lazy">
           <div class="card-badges">
-            <span class="badge ${badge}">${label}</span>
+            <span class="badge ${badge}">${escapeHtml(label)}</span>
             ${score}
           </div>
         </div>
@@ -239,11 +332,12 @@ function cardHtml(a) {
           ${sub ? `<p class="card-sub">${sub}</p>` : ''}
           <div class="card-meta">
             ${a.type ? `<span class="meta-chip">${escapeHtml(a.type)}</span>` : ''}
+            ${countChip ? `<span class="meta-chip">${escapeHtml(countChip)}</span>` : ''}
             <span class="meta-chip accent">${air}</span>
           </div>
         </div>
       </a>
-      <div class="card-track card-actions">${watchButton(a)}${trackButton(a)}</div>
+      <div class="card-track card-actions">${watchButton(a)}${favoriteButton(a)}${completeButton(a)}${trackButton(a)}</div>
     </article>
   `;
 }
@@ -263,41 +357,161 @@ function renderDaily() {
   showContent(`<div class="detail-list">${list.map(detailRow).join('')}</div>`);
 }
 
+function getWeekColWidths() {
+  let saved = {};
+  try {
+    saved = JSON.parse(localStorage.getItem(WEEK_COL_WIDTH_KEY) || '{}');
+  } catch {
+    saved = {};
+  }
+  return DAYS.reduce((acc, day) => {
+    const width = Number(saved[day]) || DEFAULT_WEEK_COL_WIDTH;
+    acc[day] = Math.max(MIN_WEEK_COL_WIDTH, Math.min(MAX_WEEK_COL_WIDTH, width));
+    return acc;
+  }, {});
+}
+
+function saveWeekColWidth(day, width) {
+  const widths = getWeekColWidths();
+  widths[day] = Math.max(MIN_WEEK_COL_WIDTH, Math.min(MAX_WEEK_COL_WIDTH, Math.round(width)));
+  localStorage.setItem(WEEK_COL_WIDTH_KEY, JSON.stringify(widths));
+}
+
+function bindWeekBoardEvents() {
+  const board = document.querySelector('.week-board');
+  if (!board) return;
+
+  board.querySelectorAll('.week-col-resizer').forEach((resizer) => {
+    resizer.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const day = resizer.dataset.resizerDay;
+      const col = board.querySelector(`.week-col[data-day="${day}"]`);
+      if (!col) return;
+
+      const startX = e.clientX;
+      const startWidth = col.offsetWidth;
+      resizer.classList.add('active');
+
+      const onMove = (ev) => {
+        const nextWidth = Math.max(
+          MIN_WEEK_COL_WIDTH,
+          Math.min(MAX_WEEK_COL_WIDTH, startWidth + (ev.clientX - startX)),
+        );
+        col.style.minWidth = `${nextWidth}px`;
+        col.style.flex = `1 1 ${nextWidth}px`;
+      };
+
+      const onUp = () => {
+        saveWeekColWidth(day, col.offsetWidth);
+        resizer.classList.remove('active');
+        document.body.classList.remove('week-resizing');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+
+      document.body.classList.add('week-resizing');
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+}
+
+async function openAnimeHeavenExternal(anime, triggerEl = null) {
+  const api = await waitForApi();
+  if (!api?.resolve_stream) {
+    showToast('AnimeHeaven lookup not available.', 'err');
+    return;
+  }
+
+  if (triggerEl) triggerEl.classList.add('loading');
+
+  const titles = [
+    anime.title_english,
+    anime.title,
+    anime.title_japanese,
+    ...(anime.title_synonyms || []),
+  ].filter(Boolean);
+
+  try {
+    const resolved = await api.resolve_stream(anime.mal_id, titles);
+    if (resolved?.ok && resolved.url) {
+      window.open(resolved.url, '_blank', 'noopener');
+      return;
+    }
+    showToast(resolved?.error || 'Could not find this show on AnimeHeaven.', 'err');
+  } catch (err) {
+    showToast(err.message || 'Could not open AnimeHeaven.', 'err');
+  } finally {
+    if (triggerEl) triggerEl.classList.remove('loading');
+  }
+}
+
 function renderWeekly() {
   const schedule = state.weekly?.schedule || {};
   const q = state.search.trim().toLowerCase();
   const today = state.bootstrap?.today_name || getTodayDay();
+  const widths = getWeekColWidths();
   let total = 0;
+  const weekLabel = state.weekly?.week_start && state.weekly?.week_end
+    ? `${state.weekly.week_start} → ${state.weekly.week_end}`
+    : 'This week';
+  const synced = state.weekly?.last_refreshed
+    ? new Date(state.weekly.last_refreshed).toLocaleString()
+    : '';
 
-  const cols = DAYS.map((day) => {
+  const cols = DAYS.map((day, index) => {
     const items = (schedule[day] || []).filter((a) => matchesSearch(a, q));
     total += items.length;
     const body = items.length
-      ? items.map((a) => `
-          <a class="week-item" href="${a.url}" target="_blank" rel="noopener">
+      ? items.map((a) => {
+          const title = escapeHtml(titleOf(a));
+          const ep = a.next_episode || a.episode_label;
+          const epBit = ep ? `Ep ${String(ep).replace(/^Ep\s*/i, '')}` : '';
+          return `
+          <button type="button" class="week-item" data-ah-mal-id="${a.mal_id}"
+            data-ah-title="${title}" title="Open on AnimeHeaven.me">
             <img src="${a.image || ''}" alt="" loading="lazy">
             <div>
-              <div class="week-item-title">${escapeHtml(titleOf(a))}</div>
-              ${a.broadcast_time ? `<div class="week-item-time">${escapeHtml(a.broadcast_time)}</div>` : ''}
+              <div class="week-item-title">${title}</div>
+              <div class="week-item-time">
+                ${a.broadcast_time ? escapeHtml(a.broadcast_time) : ''}
+                ${epBit ? ` · ${escapeHtml(epBit)}` : ''}
+              </div>
             </div>
-          </a>
-        `).join('')
+          </button>
+        `;
+        }).join('')
       : '<div class="week-empty">No shows</div>';
 
-    return `
-      <section class="week-col ${day === today ? 'today' : ''}">
+    const col = `
+      <section class="week-col ${day === today ? 'today' : ''}" data-day="${day}"
+        style="min-width:${widths[day]}px; flex:1 1 0">
         <div class="week-col-head">
           ${DAY_LABELS[day]}
-          <span class="count">${items.length} anime</span>
+          <span class="count">${items.length} drop${items.length === 1 ? '' : 's'}</span>
         </div>
         <div class="week-col-body">${body}</div>
       </section>
     `;
+    const resizer = index < DAYS.length - 1
+      ? `<div class="week-col-resizer" data-resizer-day="${day}" title="Drag to resize column"></div>`
+      : '';
+    return col + resizer;
   }).join('');
 
-  setSubheader(`Full week overview · <strong>${total}</strong> total slots`);
+  setSubheader(
+    `Episode drops · <strong>${weekLabel}</strong> · <strong>${total}</strong> releases`
+    + (synced ? ` · synced ${escapeHtml(synced)}` : '')
+    + ' · drag column edges to resize',
+  );
   $('#count-weekly').textContent = total || '—';
   showContent(`<div class="week-board">${cols}</div>`);
+  bindWeekBoardEvents();
+}
+
+function monthDayDrops(m, day, q) {
+  const byDay = m.releases_by_day || m.premiere_by_day || {};
+  return (byDay[String(day)] || []).filter((a) => matchesSearch(a, q));
 }
 
 function renderMonthly() {
@@ -311,68 +525,201 @@ function renderMonthly() {
   const premieres = (m.premieres || []).filter((a) => matchesSearch(a, q));
   const ongoing = (m.ongoing || []).filter((a) => matchesSearch(a, q));
   const startingSoon = (m.starting_soon || []).filter((a) => matchesSearch(a, q));
-  const monthTotal = premieres.length + ongoing.length;
+  let releaseTotal = 0;
+  for (let d = 1; d <= (m.days_in_month || 31); d += 1) {
+    releaseTotal += monthDayDrops(m, d, q).length;
+  }
+  const monthTotal = releaseTotal || premieres.length + ongoing.length;
+  const synced = m.last_refreshed ? new Date(m.last_refreshed).toLocaleString() : '';
 
-  setSubheader(`<strong>${m.month_name} ${m.year}</strong> · ${premieres.length} premieres · ${ongoing.length} airing · ${startingSoon.length} starting soon`);
+  setSubheader(
+    `<strong>${m.month_name} ${m.year}</strong> · ${releaseTotal} episode drops · ${premieres.length} new series`
+    + (synced ? ` · synced ${escapeHtml(synced)}` : ''),
+  );
   $('#count-monthly').textContent = monthTotal;
 
   const dayCells = [];
   for (let d = 1; d <= m.days_in_month; d++) {
-    const drops = (m.premiere_by_day?.[String(d)] || []).filter((a) => matchesSearch(a, q));
-    const items = drops.map((a) => `
-      <a class="month-day-item" href="${a.url}" target="_blank" rel="noopener">${escapeHtml(titleOf(a))}</a>
-    `).join('');
+    const drops = monthDayDrops(m, d, q);
+    const items = drops.slice(0, 6).map((a) => {
+      const ep = a.next_episode ? `Ep ${a.next_episode} · ` : (a.episode_label ? `${a.episode_label} · ` : '');
+      const time = a.broadcast_time ? `${a.broadcast_time} ` : '';
+      return `
+      <a class="month-day-item" href="${a.url || '#'}" target="_blank" rel="noopener"
+        title="${escapeHtml(time + ep + titleOf(a))}">${escapeHtml(ep)}${escapeHtml(titleOf(a))}</a>
+    `;
+    }).join('');
+    const more = drops.length > 6 ? `<span class="week-empty">+${drops.length - 6} more</span>` : '';
+    const clickable = drops.length
+      ? `role="button" tabindex="0" data-month-day="${d}" data-month-year="${m.year}" data-month-num="${m.month}" title="Show all releases for day ${d}"`
+      : '';
     dayCells.push(`
-      <div class="month-day ${drops.length ? 'has-drop' : ''}">
-        <div class="month-day-num">${d}</div>
+      <div class="month-day ${drops.length ? 'has-drop clickable-day' : ''}" ${clickable}>
+        <div class="month-day-num">${d}${drops.length ? ` · ${drops.length}` : ''}</div>
         ${items || (drops.length === 0 ? '<span class="week-empty">—</span>' : '')}
+        ${more}
       </div>
     `);
   }
 
   const premiereList = premieres.length
     ? `<div class="detail-list">${premieres.map(detailRow).join('')}</div>`
-    : '<p class="week-empty">No premieres found this month.</p>';
+    : '<p class="week-empty">No new series premieres found this month.</p>';
 
   const ongoingList = ongoing.length
-    ? `<div class="detail-list">${ongoing.map(detailRow).join('')}</div>`
-    : '<p class="week-empty">No ongoing shows found.</p>';
+    ? `<div class="detail-list">${ongoing.slice(0, 40).map(detailRow).join('')}</div>`
+    : '<p class="week-empty">No episode releases found this month yet.</p>';
 
   const soonList = startingSoon.length
     ? `<div class="detail-list">${startingSoon.map(detailRow).join('')}</div>`
     : '';
 
-  const broadcastBoard = DAYS.map((day) => {
-    const items = (m.broadcast_map?.[day] || []).filter((a) => matchesSearch(a, q));
-    if (!items.length) return '';
-    return `
-      <section class="month-section">
-        <h3>Airing Every ${DAY_LABELS[day]}</h3>
-        <div class="detail-list">${items.slice(0, 8).map(detailRow).join('')}</div>
-      </section>
-    `;
-  }).join('');
-
   showContent(`
     <div class="month-header">
       <h2>${m.month_name} ${m.year}</h2>
-      <div class="month-stats">${premieres.length} premieres · ${ongoing.length} airing now · ${startingSoon.length} coming soon</div>
+      <div class="month-stats">${releaseTotal} episode drops · ${premieres.length} new series · ${ongoing.length} unique titles</div>
     </div>
     <section class="month-section">
-      <h3>Premiere Calendar</h3>
+      <h3>Episode Release Calendar</h3>
       <div class="month-grid">${dayCells.join('')}</div>
     </section>
     <section class="month-section">
-      <h3>New This Month</h3>
+      <h3>New Series This Month</h3>
       ${premiereList}
     </section>
     <section class="month-section">
-      <h3>Airing This Month</h3>
+      <h3>Titles Airing This Month</h3>
       ${ongoingList}
     </section>
     ${soonList ? `<section class="month-section"><h3>Starting Soon</h3>${soonList}</section>` : ''}
-    ${broadcastBoard}
   `);
+}
+
+function quarterLabel(name) {
+  return ({ winter: 'Winter', spring: 'Spring', summer: 'Summer', fall: 'Fall' })[name] || name;
+}
+
+function bindYearlyEvents() {
+  $('#year-prev-btn')?.addEventListener('click', () => changeYearlyYear(state.yearlyYear - 1));
+  $('#year-next-btn')?.addEventListener('click', () => changeYearlyYear(state.yearlyYear + 1));
+  $('#year-refresh-btn')?.addEventListener('click', () => forceRefreshAll());
+}
+
+async function changeYearlyYear(year) {
+  if (year < 2000 || year > CURRENT_YEAR + 2) return;
+  state.yearlyYear = year;
+  state.yearly = null;
+  state.loaded.delete('yearly');
+  if (state.tab === 'yearly') {
+    showLoading(`Loading ${year} anime...`);
+    await loadYearlyBackground(true);
+  }
+}
+
+function renderYearly() {
+  const y = state.yearly;
+  if (!y) {
+    showLoading(`Loading ${state.yearlyYear} releases...`);
+    return;
+  }
+
+  const q = state.search.trim().toLowerCase();
+  const premieres = (y.premieres || []).filter((a) => matchesSearch(a, q));
+  const announced = (y.announced_tba || []).filter((a) => matchesSearch(a, q));
+  const airing = (y.airing || []).filter((a) => matchesSearch(a, q));
+  const yearTotal = premieres.length + announced.length + airing.length;
+
+  const refreshed = y.last_refreshed
+    ? new Date(y.last_refreshed).toLocaleString()
+    : '—';
+
+  setSubheader(
+    `<strong>${y.year}</strong> releases · ${premieres.length} dated premieres · ${announced.length} announced · auto-refreshes daily`,
+  );
+  $('#count-yearly').textContent = yearTotal || y.total || '—';
+  updateStats();
+
+  const quarterCards = ['winter', 'spring', 'summer', 'fall'].map((quarter) => {
+    const items = (y.by_quarter?.[quarter] || []).filter((a) => matchesSearch(a, q));
+    return `
+      <div class="year-quarter-card">
+        <h4>${quarterLabel(quarter)}</h4>
+        <div class="count">${items.length}</div>
+        <div class="sub">${y.year} season</div>
+      </div>
+    `;
+  }).join('');
+
+  const monthCards = [];
+  for (let month = 1; month <= 12; month += 1) {
+    const items = (y.by_month?.[String(month)] || []).filter((a) => matchesSearch(a, q));
+    const monthName = y.month_names?.[month] || `Month ${month}`;
+    const list = items.slice(0, 6).map((a) => {
+      const title = escapeHtml(titleOf(a));
+      return `
+        <button type="button" class="year-month-item" data-ah-mal-id="${a.mal_id}"
+          data-ah-title="${title}" title="Open on AnimeHeaven.me">${title}</button>
+      `;
+    }).join('');
+    const more = items.length > 6 ? `<div class="week-empty">+${items.length - 6} more</div>` : '';
+    // Card is a div (not a nested button) so per-title actions stay valid HTML.
+    monthCards.push(`
+      <div class="year-month-card ${items.length ? 'has-shows' : ''}"
+        data-open-month="${month}" data-open-year="${y.year}" role="button" tabindex="0"
+        title="Open detailed calendar for ${escapeHtml(monthName)} ${y.year}">
+        <div class="year-month-name">${monthName} <span class="month-open-hint">Open →</span></div>
+        <div class="year-month-count">${items.length} premiere${items.length === 1 ? '' : 's'}</div>
+        ${list || '<span class="week-empty">—</span>'}
+        ${more}
+      </div>
+    `);
+  }
+
+  const premiereList = premieres.length
+    ? `<div class="detail-list">${premieres.map(detailRow).join('')}</div>`
+    : '<p class="week-empty">No dated premieres found for this year yet.</p>';
+
+  const announcedList = announced.length
+    ? `<div class="detail-list">${announced.map(detailRow).join('')}</div>`
+    : '<p class="week-empty">No TBA announcements for this year yet.</p>';
+
+  const airingList = airing.length
+    ? `<div class="detail-list">${airing.map(detailRow).join('')}</div>`
+    : '<p class="week-empty">Nothing airing from this year\'s list right now.</p>';
+
+  showContent(`
+    <div class="year-toolbar">
+      <div class="year-nav">
+        <button type="button" class="year-nav-btn" id="year-prev-btn" aria-label="Previous year">‹</button>
+        <div class="year-title">${y.year}</div>
+        <button type="button" class="year-nav-btn" id="year-next-btn"
+          ${y.year >= CURRENT_YEAR + 2 ? 'disabled' : ''} aria-label="Next year">›</button>
+      </div>
+      <div class="year-refresh-note">Last synced ${escapeHtml(refreshed)} · checks for new announcements every day</div>
+      <button type="button" class="webhook-btn secondary" id="year-refresh-btn">Refresh Now</button>
+    </div>
+    <section class="month-section">
+      <h3>Season Overview</h3>
+      <div class="year-quarter-grid">${quarterCards}</div>
+    </section>
+    <section class="month-section">
+      <h3>Premieres by Month</h3>
+      <div class="year-month-grid">${monthCards.join('')}</div>
+    </section>
+    <section class="month-section">
+      <h3>Upcoming Premieres (${premieres.length})</h3>
+      ${premiereList}
+    </section>
+    <section class="month-section">
+      <h3>Announced · Date TBA (${announced.length})</h3>
+      ${announcedList}
+    </section>
+    <section class="month-section">
+      <h3>Currently Airing (${airing.length})</h3>
+      ${airingList}
+    </section>
+  `);
+  bindYearlyEvents();
 }
 
 function renderSeason(which) {
@@ -675,6 +1022,71 @@ async function untrackAnime(malId) {
   render();
 }
 
+function renderFavorites() {
+  const q = state.search.trim().toLowerCase();
+  const list = (state.favorites || []).filter((a) => matchesSearch(a, q));
+  setSubheader(`Your <strong>favorites</strong> · ${list.length} saved · star any show to pin it here`);
+  $('#count-favorites').textContent = state.favorites.length;
+  updateStats();
+  if (!list.length) {
+    showEmpty(q ? 'No favorites match your filter.' : 'No favorites yet — hit ☆ Favorite on any show.');
+    return;
+  }
+  showContent(`<div class="detail-list">${list.map(detailRow).join('')}</div>`);
+}
+
+function renderHistory() {
+  const q = state.search.trim().toLowerCase();
+  const list = (state.history || []).filter((a) => matchesSearch(a, q));
+  setSubheader(`Watch <strong>history</strong> · ${list.length} completed · mark shows done as you finish them`);
+  $('#count-history').textContent = state.history.length;
+  updateStats();
+  if (!list.length) {
+    showEmpty(q ? 'No history matches your filter.' : 'No completed titles yet — use Mark Done on any show.');
+    return;
+  }
+  const rows = list.map((a) => {
+    const when = a.completed_at
+      ? new Date(a.completed_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+      : '';
+    return `
+      <div class="history-wrap">
+        ${detailRow(a)}
+        ${when ? `<div class="history-meta">Completed ${escapeHtml(when)}${a.note ? ` · ${escapeHtml(a.note)}` : ''}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+  showContent(`<div class="detail-list">${rows}</div>`);
+}
+
+function renderSearchResults() {
+  const q = state.search.trim();
+  const media = state.filters.media || 'anime';
+  if (state.searchLoading) {
+    showLoading(`Searching ${media} via AniList for “${q}”...`);
+    return;
+  }
+  const list = state.searchResults || [];
+  const src = state.searchSource ? ` · ${escapeHtml(state.searchSource)}` : '';
+  setSubheader(
+    `<strong>Database search</strong> · ${escapeHtml(media)} · “${escapeHtml(q)}” · ${list.length} results${src}`,
+  );
+  $('#count-search').textContent = list.length || '—';
+  if (!q || q.length < 2) {
+    showEmpty('Type at least 2 characters, set filters, then press Search or Enter.');
+    return;
+  }
+  if (!list.length) {
+    if (state.searchError) {
+      showEmpty(`Search failed: ${state.searchError}. Try again in a moment.`);
+      return;
+    }
+    showEmpty(`No ${media} matches for “${q}”. Try different filters or spelling.`);
+    return;
+  }
+  showContent(`<div class="grid">${list.map(cardHtml).join('')}</div>`);
+}
+
 function render() {
   if (state.loading.has(state.tab) && !state.loaded.has(state.tab)) {
     return;
@@ -690,11 +1102,321 @@ function render() {
       if (state.monthly) renderMonthly();
       else showLoading('Loading monthly calendar...');
       break;
+    case 'yearly':
+      if (state.yearly) renderYearly();
+      else showLoading(`Loading ${state.yearlyYear} releases...`);
+      break;
     case 'now': renderSeason('now'); break;
     case 'upcoming': renderSeason('upcoming'); break;
+    case 'favorites': renderFavorites(); break;
+    case 'history': renderHistory(); break;
+    case 'search': renderSearchResults(); break;
     case 'webhooks': renderWebhooks(); break;
     default: renderDaily();
   }
+}
+
+async function loadLibrary() {
+  const api = await waitForApi();
+  if (!api) return;
+  try {
+    const [favorites, history] = await Promise.all([
+      api.get_favorites?.() || [],
+      api.get_history?.() || [],
+    ]);
+    state.favorites = favorites || [];
+    state.history = history || [];
+    updateStats();
+  } catch {
+    /* library optional on older builds */
+  }
+}
+
+async function toggleFavorite(malId) {
+  const api = await waitForApi();
+  if (!api?.toggle_favorite) return;
+  const anime = findAnimeById(malId) || { mal_id: malId };
+  const result = await api.toggle_favorite(anime);
+  if (result?.ok) {
+    state.favorites = result.favorites || [];
+    updateStats();
+    showToast(result.favorited ? 'Added to favorites.' : 'Removed from favorites.');
+    render();
+  } else {
+    showToast(result?.error || 'Could not update favorites.', 'err');
+  }
+}
+
+async function toggleCompleted(malId) {
+  const api = await waitForApi();
+  if (!api) return;
+  const anime = findAnimeById(malId) || { mal_id: malId };
+  if (isCompleted(malId)) {
+    const result = await api.remove_from_history(malId);
+    if (result?.ok) {
+      state.history = result.history || [];
+      updateStats();
+      showToast('Removed from history.');
+      render();
+    }
+    return;
+  }
+  const result = await api.mark_completed(anime);
+  if (result?.ok) {
+    state.history = result.history || [];
+    updateStats();
+    showToast('Marked as completed.');
+    render();
+  } else {
+    showToast(result?.error || 'Could not update history.', 'err');
+  }
+}
+
+const ANIME_TYPE_OPTIONS = [
+  ['any', 'All formats'],
+  ['tv', 'TV'],
+  ['movie', 'Movie'],
+  ['ova', 'OVA'],
+  ['ona', 'ONA'],
+  ['special', 'Special'],
+];
+
+const MANGA_TYPE_OPTIONS = [
+  ['any', 'All formats'],
+  ['manga', 'Manga'],
+  ['manhwa', 'Manhwa'],
+  ['manhua', 'Manhua'],
+  ['webtoon', 'Webtoon (Manhwa)'],
+  ['one_shot', 'One-shot'],
+  ['lightnovel', 'Light Novel'],
+  ['novel', 'Novel'],
+  ['doujinshi', 'Doujinshi'],
+];
+
+function sortForOrder(orderBy) {
+  if (orderBy === 'title' || orderBy === 'popularity') return 'asc';
+  return 'desc';
+}
+
+function syncFormatFilterOptions() {
+  const media = $('#filter-media')?.value || 'all';
+  const typeSel = $('#filter-type');
+  if (!typeSel) return;
+  // "all" uses anime formats + manga formats combined lightly
+  let options;
+  if (media === 'anime') options = ANIME_TYPE_OPTIONS;
+  else if (media === 'all') {
+    options = [
+      ['any', 'All formats'],
+      ...ANIME_TYPE_OPTIONS.filter(([v]) => v !== 'any'),
+      ...MANGA_TYPE_OPTIONS.filter(([v]) => v !== 'any'),
+    ];
+  } else {
+    options = MANGA_TYPE_OPTIONS;
+  }
+  const prev = typeSel.value;
+  typeSel.innerHTML = options.map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
+  // Keep selection when still valid; default to All formats (not forced manga).
+  if (options.some(([v]) => v === prev)) {
+    typeSel.value = prev;
+  } else if (['manhwa', 'webtoon', 'manhua', 'novel'].includes(media) && options.some(([v]) => v === media)) {
+    typeSel.value = media;
+  } else {
+    typeSel.value = 'any';
+  }
+  const statusSel = $('#filter-status');
+  if (statusSel) {
+    const airingOpt = statusSel.querySelector('option[value="airing"]');
+    if (airingOpt) {
+      airingOpt.textContent = media === 'anime' ? 'Airing' : 'Publishing';
+    }
+  }
+}
+
+function readSearchFilters() {
+  state.filters = {
+    media: $('#filter-media')?.value || 'all',
+    type: $('#filter-type')?.value || 'any',
+    status: $('#filter-status')?.value || 'any',
+    order_by: $('#filter-order')?.value || 'popularity',
+    min_score: Number($('#filter-score')?.value || 0),
+  };
+  return state.filters;
+}
+
+let searchDebounceTimer = null;
+
+async function runDatabaseSearch(forceTab = true) {
+  const q = ($('#search')?.value || state.search || '').trim();
+  state.search = q;
+  const filters = readSearchFilters();
+  if (q.length < 2) {
+    state.searchResults = [];
+    state.searchError = null;
+    if (forceTab) setTab('search');
+    else if (state.tab === 'search') renderSearchResults();
+    return;
+  }
+
+  const api = await waitForApi();
+  if (!api) {
+    showToast('App bridge not ready — restart the app.', 'err');
+    return;
+  }
+  if (!api.search_media && !api.search_anime && !api.search) {
+    showToast('Search API not available in this build.', 'err');
+    return;
+  }
+
+  const requestId = (state.searchRequestId = (state.searchRequestId || 0) + 1);
+  state.searchLoading = true;
+  state.searchError = null;
+  if (forceTab) {
+    state.tab = 'search';
+    document.querySelectorAll('.tab').forEach((t) => {
+      t.classList.toggle('active', t.dataset.tab === 'search');
+    });
+  }
+  if (state.tab === 'search') renderSearchResults();
+  setStatus('Searching...', 'loading');
+
+  try {
+    // Only force type for country-based media (manhwa/manhua/webtoon).
+    // Never force format=manga when user chose "All formats" — that hid novels & mixed results.
+    let typeParam = filters.type === 'any' ? null : filters.type;
+    if (!typeParam && ['manhwa', 'webtoon', 'manhua', 'novel'].includes(filters.media)) {
+      typeParam = filters.media;
+    }
+    const opts = {
+      limit: 24,
+      type: typeParam,
+      status: filters.status === 'any' ? null : filters.status,
+      order_by: filters.order_by,
+      sort: sortForOrder(filters.order_by),
+      min_score: filters.min_score || 0,
+    };
+    let result;
+    // Prefer simple arity first — pywebview is picky with many null args.
+    if (api.search_media) {
+      try {
+        result = await api.search_media(
+          q,
+          filters.media,
+          opts.limit,
+          opts.type || '',
+          opts.status || '',
+          opts.order_by,
+          opts.sort,
+          opts.min_score,
+        );
+      } catch (inner) {
+        // Fallback: 2-arg simple search
+        result = api.search
+          ? await api.search(q, filters.media, opts.limit)
+          : null;
+        if (!result) throw inner;
+      }
+    } else if (api.search) {
+      result = await api.search(q, filters.media, opts.limit);
+    } else if (filters.media !== 'anime' && api.search_manga) {
+      result = await api.search_manga(q, opts.limit, opts.type || filters.media);
+    } else {
+      result = await api.search_anime(q, opts.limit);
+    }
+
+    // Ignore stale responses if user typed again.
+    if (requestId !== state.searchRequestId) return;
+
+    state.searchResults = result?.data || [];
+    state.searchError = result?.error || null;
+    state.searchSource = result?.source || '';
+    state.searchLoading = false;
+    if (state.searchError && !state.searchResults.length) {
+      setStatus('Search error', '');
+      showToast(`Search failed: ${state.searchError}`, 'err');
+    } else {
+      setStatus('Ready', 'ready');
+      if (!state.searchResults.length) {
+        showToast(`No results for “${q}”.`, '');
+      }
+    }
+    if (state.tab === 'search') renderSearchResults();
+  } catch (err) {
+    if (requestId !== state.searchRequestId) return;
+    state.searchLoading = false;
+    state.searchError = err.message || String(err);
+    setStatus('Error', '');
+    showToast(state.searchError || 'Search failed.', 'err');
+    if (state.tab === 'search') {
+      showError(state.searchError || 'Search failed. Check your connection and try again.');
+    }
+  }
+}
+
+function scheduleDatabaseSearch() {
+  clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(() => {
+    if ((state.search || '').trim().length >= 2 && state.tab === 'search') {
+      runDatabaseSearch(false);
+    }
+  }, 450);
+}
+
+async function openMonthDetail(year, month, focusDay = null) {
+  const api = await waitForApi();
+  if (!api?.get_monthly) return;
+  showLoading(`Loading ${month}/${year} releases...`);
+  setStatus('Loading month...', 'loading');
+  try {
+    state.monthly = await api.get_monthly(year, month);
+    state.loaded.add('monthly');
+    state.tab = 'monthly';
+    document.querySelectorAll('.tab').forEach((t) => {
+      t.classList.toggle('active', t.dataset.tab === 'monthly');
+    });
+    setStatus('Ready', 'ready');
+    renderMonthly();
+    updateStats();
+    if (focusDay) {
+      showDayPremiereDetail(Number(focusDay));
+    }
+  } catch (err) {
+    showError(err.message || 'Could not load month.');
+  }
+}
+
+function showDayPremiereDetail(day) {
+  const m = state.monthly;
+  if (!m || !day) return;
+  const drops = monthDayDrops(m, day, state.search.trim().toLowerCase());
+  if (!drops.length) {
+    showToast(`No releases on day ${day}.`, '');
+    return;
+  }
+  const listHtml = drops.map((a) => {
+    const ep = a.next_episode ? `Episode ${a.next_episode}` : (a.episode_label || '');
+    const time = a.broadcast_time || '';
+    const extra = [time, ep].filter(Boolean).join(' · ');
+    return `
+      <div class="history-wrap">
+        ${detailRow(a)}
+        ${extra ? `<div class="history-meta">${escapeHtml(extra)}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+  setSubheader(
+    `<strong>${m.month_name} ${day}, ${m.year}</strong> · ${drops.length} release${drops.length === 1 ? '' : 's'} · <button type="button" class="linkish-btn" id="back-to-month-btn">← Full month</button>`,
+  );
+  showContent(`
+    <div class="day-detail-panel">
+      <div class="month-header">
+        <h2>${m.month_name} ${day}</h2>
+        <div class="month-stats">${drops.length} episode drop${drops.length === 1 ? '' : 's'}</div>
+      </div>
+      <div class="detail-list">${listHtml}</div>
+    </div>
+  `);
+  $('#back-to-month-btn')?.addEventListener('click', () => renderMonthly());
 }
 
 async function loadBootstrap() {
@@ -725,10 +1447,13 @@ async function loadBootstrap() {
 
   loadWeeklyBackground();
   loadMonthlyBackground();
+  loadYearlyBackground();
+  startDailyRefreshWatcher();
 }
 
-async function loadWeeklyBackground() {
-  if (state.loading.has('weekly') || state.weekly) return;
+async function loadWeeklyBackground(force = false) {
+  if (state.loading.has('weekly')) return;
+  if (state.weekly && !force) return;
   state.loading.add('weekly');
   setStatus('Syncing week...', 'loading');
 
@@ -748,15 +1473,18 @@ async function loadWeeklyBackground() {
   }
 }
 
-async function loadMonthlyBackground() {
-  if (state.loading.has('monthly') || state.monthly) return;
+async function loadMonthlyBackground(force = false) {
+  if (state.loading.has('monthly')) return;
+  if (state.monthly && !force) return;
   state.loading.add('monthly');
 
   try {
     const api = await waitForApi();
     state.monthly = await api.get_monthly();
     state.loaded.add('monthly');
-    $('#count-monthly').textContent = state.monthly.premieres?.length ?? 0;
+    $('#count-monthly').textContent = state.monthly.release_count
+      || state.monthly.premieres?.length
+      || 0;
     updateStats();
     if (state.tab === 'monthly') render();
   } catch (err) {
@@ -764,6 +1492,105 @@ async function loadMonthlyBackground() {
   } finally {
     state.loading.delete('monthly');
   }
+}
+
+async function loadYearlyBackground(force = false) {
+  if (!force && (state.loading.has('yearly') || state.yearly)) return;
+  state.loading.add('yearly');
+
+  try {
+    const api = await waitForApi();
+    state.yearly = await api.get_yearly(state.yearlyYear);
+    state.loaded.add('yearly');
+    const total = (state.yearly.premieres?.length || 0) + (state.yearly.announced_tba?.length || 0);
+    $('#count-yearly').textContent = total || state.yearly.total || '—';
+    updateStats();
+    if (state.tab === 'yearly') render();
+  } catch (err) {
+    if (state.tab === 'yearly') showError(`Yearly view failed: ${err.message}`);
+  } finally {
+    state.loading.delete('yearly');
+  }
+}
+
+async function forceRefreshAll() {
+  const api = await waitForApi();
+  if (!api?.refresh_all_data) return;
+
+  const btn = $('#refresh-btn');
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add('spinning');
+  }
+  setStatus('Refreshing...', 'loading');
+  showToast('Pulling latest episode schedules...', '');
+  try {
+    const result = await api.refresh_all_data(true);
+    state.bootstrap = result.bootstrap || state.bootstrap;
+    state.weekly = result.weekly || null;
+    state.monthly = result.monthly || null;
+    state.yearly = null;
+    state.loaded.clear();
+    state.loaded.add('daily');
+    state.loaded.add('now');
+    state.loaded.add('upcoming');
+    if (state.weekly) state.loaded.add('weekly');
+    if (state.monthly) state.loaded.add('monthly');
+    $('#last-updated').textContent = `Updated: ${new Date().toLocaleString()}`;
+    state.refreshDate = result.today || null;
+    updateStats();
+    // Fill anything not returned by the refresh call.
+    await Promise.all([
+      state.weekly ? Promise.resolve() : loadWeeklyBackground(),
+      state.monthly ? Promise.resolve() : loadMonthlyBackground(),
+      loadYearlyBackground(true),
+    ]);
+    setStatus('Ready', 'ready');
+    const weekN = state.weekly
+      ? Object.values(state.weekly.schedule || {}).reduce((n, arr) => n + (arr?.length || 0), 0)
+      : 0;
+    const monthN = state.monthly?.release_count
+      || (state.monthly?.premieres?.length || 0);
+    showToast(
+      `Refreshed · ${state.bootstrap?.today?.length || 0} today · ${weekN} this week · ${monthN} this month`,
+      'ok',
+    );
+    render();
+  } catch (err) {
+    setStatus('Error', '');
+    showToast(err.message || 'Refresh failed.', 'err');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove('spinning');
+    }
+  }
+}
+
+function todayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+async function checkDailyRefresh() {
+  const api = await waitForApi();
+  if (!api?.get_refresh_status) return;
+
+  const status = await api.get_refresh_status();
+  const today = status.today || todayKey();
+  if (state.refreshDate && state.refreshDate === today) return;
+
+  if (state.refreshDate && state.refreshDate !== today) {
+    await forceRefreshAll();
+    return;
+  }
+
+  state.refreshDate = today;
+}
+
+function startDailyRefreshWatcher() {
+  state.refreshDate = todayKey();
+  checkDailyRefresh();
+  setInterval(checkDailyRefresh, DAILY_REFRESH_CHECK_MS);
 }
 
 async function ensureTabData(tab) {
@@ -774,6 +1601,10 @@ async function ensureTabData(tab) {
   if (tab === 'monthly' && !state.monthly) {
     showLoading('Loading monthly calendar...');
     await loadMonthlyBackground();
+  }
+  if (tab === 'yearly' && !state.yearly) {
+    showLoading(`Loading ${state.yearlyYear} releases...`);
+    await loadYearlyBackground(true);
   }
 }
 
@@ -808,17 +1639,91 @@ function renderStreamEpisodes() {
   });
 }
 
+function stopProgressTracking() {
+  if (state.stream.progressTimer) {
+    clearInterval(state.stream.progressTimer);
+    state.stream.progressTimer = null;
+  }
+}
+
+async function flushWatchProgress() {
+  const api = await waitForApi();
+  const video = $('#stream-video');
+  const anime = state.stream.anime;
+  const ep = state.stream.currentEp;
+  if (!api?.save_watch_progress || !video || !anime?.mal_id || !ep) return;
+  if (!video.duration || Number.isNaN(video.duration)) return;
+  try {
+    await api.save_watch_progress(
+      anime.mal_id,
+      ep,
+      video.currentTime,
+      video.duration,
+      titleOf(anime),
+    );
+  } catch {
+    /* best-effort */
+  }
+}
+
+function startProgressTracking() {
+  stopProgressTracking();
+  state.stream.progressTimer = setInterval(() => {
+    flushWatchProgress();
+  }, 5000);
+}
+
+function exitStreamFullscreen() {
+  const overlay = $('#stream-overlay');
+  overlay?.classList.remove('is-fullscreen');
+  document.body.classList.remove('stream-fullscreen');
+  if (document.fullscreenElement) {
+    document.exitFullscreen?.().catch(() => {});
+  }
+}
+
+async function toggleStreamFullscreen() {
+  const wrap = $('#stream-player-wrap') || $('#stream-panel') || $('#stream-overlay');
+  const overlay = $('#stream-overlay');
+  if (!wrap) return;
+
+  try {
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+      overlay?.classList.remove('is-fullscreen');
+      document.body.classList.remove('stream-fullscreen');
+      return;
+    }
+    if (wrap.requestFullscreen) {
+      await wrap.requestFullscreen();
+    } else if (wrap.webkitRequestFullscreen) {
+      await wrap.webkitRequestFullscreen();
+    } else {
+      overlay?.classList.toggle('is-fullscreen');
+      document.body.classList.toggle('stream-fullscreen');
+    }
+  } catch {
+    overlay?.classList.toggle('is-fullscreen');
+    document.body.classList.toggle('stream-fullscreen');
+  }
+}
+
 function closeStreamOverlay() {
+  flushWatchProgress();
+  stopProgressTracking();
+  exitStreamFullscreen();
   const overlay = $('#stream-overlay');
   const video = $('#stream-video');
   if (video) {
     video.pause();
+    video.onloadedmetadata = null;
+    video.ontimeupdate = null;
     video.removeAttribute('src');
     video.load();
   }
   state.stream = {
     open: false, anime: null, ahId: null, episodes: [],
-    currentEp: null, loading: false, error: null,
+    currentEp: null, loading: false, error: null, progressTimer: null,
   };
   if (overlay) {
     overlay.classList.add('hidden');
@@ -830,6 +1735,9 @@ async function playStreamEpisode(episode, gateHash) {
   const api = await waitForApi();
   const video = $('#stream-video');
   if (!api?.get_stream_sources || !video) return;
+
+  await flushWatchProgress();
+  stopProgressTracking();
 
   state.stream.currentEp = episode;
   state.stream.loading = true;
@@ -845,10 +1753,71 @@ async function playStreamEpisode(episode, gateHash) {
     return;
   }
 
-  video.src = result.primary || result.sources?.[0];
-  video.load();
-  video.play().catch(() => {});
-  setStreamStatus(`Now playing episode ${episode} · via AnimeHeaven.me`);
+  video.onerror = () => {
+    setStreamStatus('Playback failed — try another episode or open on AnimeHeaven.me', 'err');
+  };
+
+  let resumeAt = 0;
+  try {
+    const saved = await api.get_watch_progress?.(state.stream.anime?.mal_id, episode);
+    if (saved?.seconds && saved.seconds > 5) {
+      resumeAt = Number(saved.seconds);
+    }
+  } catch {
+    resumeAt = 0;
+  }
+
+  const candidates = [];
+  const pushSrc = (u) => {
+    if (u && !candidates.includes(u)) candidates.push(u);
+  };
+  pushSrc(result.playback_url);
+  pushSrc(result.primary);
+  (result.sources || []).forEach(pushSrc);
+
+  if (!candidates.length) {
+    setStreamStatus('No playable sources returned.', 'err');
+    return;
+  }
+
+  let srcIndex = 0;
+  const tryPlay = async (idx) => {
+    const src = candidates[idx];
+    if (!src) {
+      setStreamStatus('Playback failed — try another episode or Open on AnimeHeaven.me', 'err');
+      return;
+    }
+    video.removeAttribute('crossorigin');
+    video.src = src;
+    video.load();
+    try {
+      await video.play();
+      if (!resumeAt) setStreamStatus(`Now playing episode ${episode} · via AnimeHeaven.me`);
+      startProgressTracking();
+    } catch {
+      setStreamStatus(resumeAt ? 'Press play to resume where you left off.' : 'Press play to start — stream is ready.', '');
+      startProgressTracking();
+    }
+  };
+
+  video.onerror = () => {
+    srcIndex += 1;
+    if (srcIndex < candidates.length) {
+      setStreamStatus(`Retrying stream source ${srcIndex + 1}/${candidates.length}...`);
+      tryPlay(srcIndex);
+    } else {
+      setStreamStatus('Playback failed — try another episode or open on AnimeHeaven.me', 'err');
+    }
+  };
+
+  video.onloadedmetadata = () => {
+    if (resumeAt > 0 && resumeAt < (video.duration || Infinity) - 15) {
+      video.currentTime = resumeAt;
+      setStreamStatus(`Resumed episode ${episode} at ${Math.floor(resumeAt / 60)}:${String(Math.floor(resumeAt % 60)).padStart(2, '0')}`);
+    }
+  };
+
+  await tryPlay(0);
 }
 
 async function openStreamOverlay(anime) {
@@ -909,8 +1878,19 @@ async function openStreamOverlay(anime) {
   }
 
   renderStreamEpisodes();
-  const latest = state.stream.episodes[0];
-  await playStreamEpisode(latest.episode, latest.gate_hash);
+
+  // Resume the last watched episode when progress exists; otherwise play latest.
+  let target = state.stream.episodes[0];
+  try {
+    const last = await api.get_last_watch_progress?.(anime.mal_id);
+    if (last?.episode) {
+      const match = state.stream.episodes.find((ep) => Number(ep.episode) === Number(last.episode));
+      if (match) target = match;
+    }
+  } catch {
+    /* fall through to latest */
+  }
+  await playStreamEpisode(target.episode, target.gate_hash);
 }
 
 async function loadAppInfo() {
@@ -937,8 +1917,32 @@ function init() {
   loadWebhookData().then(() => {
     $('#count-webhooks').textContent = state.watchlist.length;
   });
+  loadLibrary();
+
+  $('#refresh-btn')?.addEventListener('click', () => forceRefreshAll());
 
   document.body.addEventListener('click', (e) => {
+    // Per-title actions inside month cards take priority over opening the month.
+    if (e.target.closest('[data-ah-mal-id], [data-watch-mal-id], a')) {
+      /* handled below */
+    } else {
+      const openMonth = e.target.closest('[data-open-month]');
+      if (openMonth) {
+        e.preventDefault();
+        e.stopPropagation();
+        openMonthDetail(Number(openMonth.dataset.openYear), Number(openMonth.dataset.openMonth));
+        return;
+      }
+    }
+
+    const monthDay = e.target.closest('[data-month-day]');
+    if (monthDay && !e.target.closest('a')) {
+      e.preventDefault();
+      e.stopPropagation();
+      showDayPremiereDetail(Number(monthDay.dataset.monthDay));
+      return;
+    }
+
     const watchBtn = e.target.closest('[data-watch-mal-id]');
     if (watchBtn) {
       e.preventDefault();
@@ -952,20 +1956,71 @@ function init() {
       return;
     }
 
+    const favBtn = e.target.closest('[data-fav-id]');
+    if (favBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleFavorite(Number(favBtn.dataset.favId));
+      return;
+    }
+
+    const completeBtn = e.target.closest('[data-complete-id]');
+    if (completeBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleCompleted(Number(completeBtn.dataset.completeId));
+      return;
+    }
+
     const trackBtn = e.target.closest('[data-track-id]');
     if (trackBtn) {
       e.preventDefault();
       e.stopPropagation();
       trackAnime(Number(trackBtn.dataset.trackId));
+      return;
+    }
+
+    const ahItem = e.target.closest('[data-ah-mal-id]');
+    if (ahItem) {
+      e.preventDefault();
+      e.stopPropagation();
+      const malId = Number(ahItem.dataset.ahMalId);
+      const anime = findAnimeById(malId) || {
+        mal_id: malId,
+        title: ahItem.dataset.ahTitle,
+      };
+      openAnimeHeavenExternal(anime, ahItem);
     }
   });
 
   $('#stream-close-btn')?.addEventListener('click', closeStreamOverlay);
+  $('#stream-fullscreen-btn')?.addEventListener('click', toggleStreamFullscreen);
   $('#stream-overlay')?.addEventListener('click', (e) => {
     if (e.target.id === 'stream-overlay') closeStreamOverlay();
   });
+  document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement) {
+      $('#stream-overlay')?.classList.remove('is-fullscreen');
+      document.body.classList.remove('stream-fullscreen');
+    } else {
+      $('#stream-overlay')?.classList.add('is-fullscreen');
+      document.body.classList.add('stream-fullscreen');
+    }
+  });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && state.stream.open) closeStreamOverlay();
+    if (!state.stream.open) return;
+    if (e.key === 'Escape') {
+      if (document.fullscreenElement || $('#stream-overlay')?.classList.contains('is-fullscreen')) {
+        exitStreamFullscreen();
+      } else {
+        closeStreamOverlay();
+      }
+    }
+    if (e.key === 'f' || e.key === 'F') {
+      if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+      e.preventDefault();
+      toggleStreamFullscreen();
+    }
   });
 
   document.querySelectorAll('.tab').forEach((tab) => {
@@ -974,12 +2029,56 @@ function init() {
 
   $('#search').addEventListener('input', (e) => {
     state.search = e.target.value;
-    render();
+    if (state.tab === 'search') {
+      scheduleDatabaseSearch();
+    } else {
+      render();
+    }
+  });
+  $('#search').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      runDatabaseSearch(true);
+    }
+  });
+  $('#search-go-btn')?.addEventListener('click', () => runDatabaseSearch(true));
+  syncFormatFilterOptions();
+  $('#filter-media')?.addEventListener('change', () => {
+    syncFormatFilterOptions();
+    readSearchFilters();
+    if (state.tab === 'search' && state.search.trim().length >= 2) {
+      runDatabaseSearch(false);
+    }
+  });
+  ['filter-type', 'filter-status', 'filter-order', 'filter-score'].forEach((id) => {
+    $(`#${id}`)?.addEventListener('change', () => {
+      readSearchFilters();
+      if (state.tab === 'search' && state.search.trim().length >= 2) {
+        runDatabaseSearch(false);
+      }
+    });
+  });
+
+  // Keyboard activation for year-month cards and calendar days.
+  document.body.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const openMonth = e.target.closest?.('[data-open-month]');
+    if (openMonth && !e.target.closest('[data-ah-mal-id]')) {
+      e.preventDefault();
+      openMonthDetail(Number(openMonth.dataset.openYear), Number(openMonth.dataset.openMonth));
+      return;
+    }
+    const monthDay = e.target.closest?.('[data-month-day]');
+    if (monthDay) {
+      e.preventDefault();
+      showDayPremiereDetail(Number(monthDay.dataset.monthDay));
+    }
   });
 
   $('#retry-btn').addEventListener('click', () => {
     state.weekly = null;
     state.monthly = null;
+    state.yearly = null;
     state.bootstrap = null;
     state.loaded.clear();
     state.loading.clear();

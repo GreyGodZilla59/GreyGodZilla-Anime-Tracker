@@ -1,7 +1,7 @@
 """Single source of truth for Grey GodZilla Anime Tracker release metadata."""
 
 APP_NAME = "Grey GodZilla Anime Tracker"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.4.1"
 APP_PUBLISHER = "Grey GodZilla"
 
 
