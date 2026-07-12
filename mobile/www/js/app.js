@@ -1728,10 +1728,33 @@ function closeStreamOverlay() {
   }
 }
 
+function getAhPlayer() {
+  try {
+    return window.Capacitor?.Plugins?.AhPlayer || null;
+  } catch {
+    return null;
+  }
+}
+
+async function openAhWebPlayer({ gateHash = '', url = '', title = 'Watch' } = {}) {
+  const plugin = getAhPlayer();
+  if (plugin?.openEpisode) {
+    await plugin.openEpisode({ gateHash: gateHash || '', url: url || '', title: title || 'Watch' });
+    return { ok: true, mode: 'webview' };
+  }
+  // Free fallback: system browser / external Chrome tab
+  const target = url || (gateHash ? `https://animeheaven.me/gate.php` : 'https://animeheaven.me/');
+  if (window.Capacitor?.Plugins?.Browser?.open) {
+    await window.Capacitor.Plugins.Browser.open({ url: target });
+    return { ok: true, mode: 'browser' };
+  }
+  window.open(target, '_blank');
+  return { ok: true, mode: 'window' };
+}
+
 async function playStreamEpisode(episode, gateHash) {
   const api = await waitForApi();
   const video = $('#stream-video');
-  if (!api?.get_stream_sources || !video) return;
 
   await flushWatchProgress();
   stopProgressTracking();
@@ -1742,17 +1765,44 @@ async function playStreamEpisode(episode, gateHash) {
   setStreamStatus(`Loading episode ${episode}...`);
   $('#stream-ep-label').textContent = `Episode ${episode}`;
 
+  const showUrl = state.stream.showUrl || state.stream.ahUrl || '';
+  const title = state.stream.anime ? titleOf(state.stream.anime) : 'Watch';
+
+  // Android free path: open AnimeHeaven on its own domain (cookies + their player).
+  // Extracted MP4 URLs fail in <video> because CDN requires Referer headers.
+  if (getAhPlayer() || window.Capacitor?.isNativePlatform?.()) {
+    state.stream.loading = false;
+    try {
+      await openAhWebPlayer({ gateHash, url: showUrl, title: `${title} · Ep ${episode}` });
+      setStreamStatus(`Episode ${episode} opened in free AnimeHeaven player. Press back to return.`);
+      // Soft progress mark so history still works
+      try {
+        await api?.set_watch_progress?.(state.stream.anime?.mal_id, episode, 1, 0);
+      } catch { /* optional */ }
+    } catch (e) {
+      setStreamStatus(`Player open failed: ${e?.message || e}. Use Open on AnimeHeaven.me`, 'err');
+    }
+    return;
+  }
+
+  if (!api?.get_stream_sources || !video) {
+    setStreamStatus('Streaming not available — use Open on AnimeHeaven.me', 'err');
+    return;
+  }
+
   const result = await api.get_stream_sources(gateHash);
   state.stream.loading = false;
 
   if (!result?.ok) {
+    // Last resort: open show page
+    if (showUrl) {
+      await openAhWebPlayer({ url: showUrl, title });
+      setStreamStatus('Opened AnimeHeaven show page.', '');
+      return;
+    }
     setStreamStatus(result?.error || 'Could not load stream.', 'err');
     return;
   }
-
-  video.onerror = () => {
-    setStreamStatus('Playback failed — try another episode or open on AnimeHeaven.me', 'err');
-  };
 
   let resumeAt = 0;
   try {
@@ -1773,7 +1823,7 @@ async function playStreamEpisode(episode, gateHash) {
   (result.sources || []).forEach(pushSrc);
 
   if (!candidates.length) {
-    setStreamStatus('No playable sources returned.', 'err');
+    setStreamStatus('No playable sources — use Open on AnimeHeaven.me', 'err');
     return;
   }
 
@@ -1781,7 +1831,7 @@ async function playStreamEpisode(episode, gateHash) {
   const tryPlay = async (idx) => {
     const src = candidates[idx];
     if (!src) {
-      setStreamStatus('Playback failed — try another episode or Open on AnimeHeaven.me', 'err');
+      setStreamStatus('Playback failed — try Open on AnimeHeaven.me', 'err');
       return;
     }
     video.removeAttribute('crossorigin');
@@ -1805,7 +1855,7 @@ async function playStreamEpisode(episode, gateHash) {
       setStreamStatus(`Retrying stream source ${srcIndex + 1}/${candidates.length}...`);
       tryPlay(srcIndex);
     } else {
-      setStreamStatus('Playback failed — try another episode or open on AnimeHeaven.me', 'err');
+      setStreamStatus('Playback failed — try Open on AnimeHeaven.me', 'err');
     }
   };
 
@@ -1863,12 +1913,20 @@ async function openStreamOverlay(anime) {
 
   state.stream.ahId = resolved.ah_id;
   state.stream.episodes = resolved.episodes || [];
+  state.stream.showUrl = resolved.url || (resolved.ah_id ? `https://animeheaven.me/anime.php?${resolved.ah_id}` : '');
+  state.stream.ahUrl = state.stream.showUrl;
   $('#stream-title').textContent = resolved.title || title;
-  $('#stream-subtitle').textContent = resolved.title_japanese || 'AnimeHeaven.me';
+  $('#stream-subtitle').textContent = resolved.title_japanese || 'AnimeHeaven.me (free player)';
   const ahLink = $('#stream-ah-link');
   if (ahLink) {
-    ahLink.href = resolved.url || 'https://animeheaven.me';
-    ahLink.textContent = 'Open on AnimeHeaven.me';
+    ahLink.href = state.stream.showUrl || 'https://animeheaven.me';
+    ahLink.textContent = 'Open full show on AnimeHeaven.me';
+    ahLink.onclick = (e) => {
+      if (getAhPlayer()) {
+        e.preventDefault();
+        openAhWebPlayer({ url: state.stream.showUrl, title: resolved.title || title });
+      }
+    };
   }
 
   if (!state.stream.episodes.length) {

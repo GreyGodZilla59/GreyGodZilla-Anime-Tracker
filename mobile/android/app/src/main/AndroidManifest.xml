@@ -25,6 +25,15 @@
 
         </activity>
 
+        <!-- Free in-app AnimeHeaven WebView player (no paid APIs) -->
+        <activity
+            android:name=".EpisodeWebViewActivity"
+            android:label="Watch"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:hardwareAccelerated="true"
+            android:theme="@style/AppTheme.NoActionBar"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
