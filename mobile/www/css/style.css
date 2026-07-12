@@ -787,6 +787,95 @@ body.stream-fullscreen .stream-video {
   color: var(--accent3);
 }
 
+/* ---- In-app reader (manga / manhwa / webtoon / novel) ---- */
+.reader-overlay {
+  position: fixed; inset: 0; z-index: 1200;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex; align-items: center; justify-content: center;
+  padding: 0.5rem;
+}
+.reader-overlay.hidden { display: none; }
+.reader-panel {
+  width: min(720px, 100%);
+  max-height: 96vh;
+  background: var(--card);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+}
+.reader-header {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 0.6rem; padding: 0.7rem 0.85rem 0.45rem;
+  border-bottom: 1px solid var(--line-soft);
+  flex-shrink: 0;
+}
+.reader-header h2 { font-size: 1.02rem; color: var(--accent3); margin: 0; }
+.reader-subtitle { font-size: 0.74rem; color: var(--muted); margin-top: 0.12rem; }
+.reader-header-actions { display: flex; gap: 0.35rem; flex-shrink: 0; }
+.reader-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.reader-chapters {
+  display: flex; flex-direction: column; gap: 0.35rem;
+  padding: 0.65rem;
+}
+.reader-ch-btn {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  text-align: left;
+  padding: 0.55rem 0.7rem;
+  background: var(--inset);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.reader-ch-btn:hover { border-color: var(--accent); color: var(--accent3); }
+.reader-ch-btn.active {
+  border-color: var(--accent);
+  background: var(--tab-active);
+  color: var(--accent3);
+}
+.reader-ch-btn .ch-meta { color: var(--muted); font-size: 0.72rem; white-space: nowrap; }
+.reader-pages {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 0.15rem;
+  padding: 0.25rem 0 1.2rem;
+  background: #050505;
+}
+.reader-pages img {
+  width: 100%;
+  max-width: 720px;
+  height: auto;
+  display: block;
+  background: #111;
+}
+.reader-pages.hidden { display: none; }
+.reader-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.4rem;
+  padding: 0.45rem 0.65rem calc(0.45rem + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--line-soft);
+  flex-shrink: 0;
+  background: var(--card);
+}
+.reader-nav { display: flex; gap: 0.3rem; }
+.read-btn {
+  background: linear-gradient(135deg, #1a3a5c, #0f2840);
+  border: 1px solid #3a7ab8;
+  color: #9fd0ff;
+  border-radius: var(--radius-sm);
+  padding: 0.32rem 0.55rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.read-btn:hover { border-color: #6ab0ff; color: #fff; }
+
 .footer strong { color: var(--accent3); }
 .footer a { color: var(--accent); text-decoration: none; }
 .footer a:hover { text-decoration: underline; }

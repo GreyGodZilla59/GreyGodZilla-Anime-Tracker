@@ -21,7 +21,7 @@
         <div class="brand-text">
           <div class="brand-row">
             <h1>Grey GodZilla Anime App</h1>
-            <span class="version-badge" id="version-badge">v1.5.3</span>
+            <span class="version-badge" id="version-badge">v1.5.4</span>
           </div>
           <p class="brand-sub">Track · Stream · Alerts</p>
         </div>
@@ -115,7 +115,7 @@
   </main>
 
   <footer class="footer">
-    <p id="app-version-line"><strong>Grey GodZilla Anime App</strong> · <span id="footer-version">v1.5.3</span></p>
+    <p id="app-version-line"><strong>Grey GodZilla Anime App</strong> · <span id="footer-version">v1.5.4</span></p>
     <p class="updated" id="last-updated"></p>
   </footer>
 
@@ -143,6 +143,35 @@
         <span id="stream-ep-label" class="stream-ep-label"></span>
       </div>
       <div id="stream-episodes" class="stream-episodes"></div>
+    </div>
+  </div>
+
+  <!-- Free in-app reader for manga / manhwa / webtoons / novels -->
+  <div id="reader-overlay" class="reader-overlay hidden" aria-hidden="true">
+    <div class="reader-panel" id="reader-panel">
+      <div class="reader-header">
+        <div class="reader-header-text">
+          <h2 id="reader-title">Read</h2>
+          <p id="reader-subtitle" class="reader-subtitle"></p>
+        </div>
+        <div class="reader-header-actions">
+          <button type="button" class="stream-tool-btn" id="reader-quality-btn" title="Image quality">HQ</button>
+          <button type="button" class="stream-close" id="reader-close-btn" aria-label="Close">✕</button>
+        </div>
+      </div>
+      <div id="reader-status" class="stream-status"></div>
+      <div id="reader-body" class="reader-body">
+        <div id="reader-chapters" class="reader-chapters"></div>
+        <div id="reader-pages" class="reader-pages hidden"></div>
+      </div>
+      <div class="reader-footer">
+        <button type="button" class="stream-tool-btn" id="reader-back-btn">← Chapters</button>
+        <span id="reader-page-label" class="stream-ep-label"></span>
+        <div class="reader-nav">
+          <button type="button" class="stream-tool-btn" id="reader-prev-btn">‹ Prev</button>
+          <button type="button" class="stream-tool-btn" id="reader-next-btn">Next ›</button>
+        </div>
+      </div>
     </div>
   </div>
 

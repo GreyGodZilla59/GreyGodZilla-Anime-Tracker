@@ -44,6 +44,18 @@ const state = {
     error: null,
     progressTimer: null,
   },
+  reader: {
+    open: false,
+    item: null,
+    mdId: null,
+    chapters: [],
+    currentChapter: null,
+    pages: [],
+    loading: false,
+    error: null,
+    dataSaver: true,
+    mode: 'chapters', // chapters | pages
+  },
   loading: new Set(),
   loaded: new Set(),
   error: null,
@@ -237,11 +249,18 @@ function completeButton(a) {
 function watchButton(a) {
   if (!a.mal_id || isPrintMedia(a)) return '';
   const title = escapeHtml(titleOf(a));
-  return `<button type="button" class="watch-btn" data-watch-mal-id="${a.mal_id}" data-watch-title="${title}" title="Stream on AnimeHeaven.me">▶ Watch</button>`;
+  return `<button type="button" class="watch-btn" data-watch-mal-id="${a.mal_id}" data-watch-title="${title}" title="Stream in-app">▶ Watch</button>`;
+}
+
+function readButton(a) {
+  if (!a || !isPrintMedia(a)) return '';
+  const title = escapeHtml(titleOf(a));
+  const id = a.mal_id || a.anilist_id || '';
+  return `<button type="button" class="read-btn" data-read-mal-id="${id}" data-read-title="${title}" title="Read in-app (free)">📖 Read</button>`;
 }
 
 function actionButtons(a) {
-  return `<div class="detail-actions">${watchButton(a)}${favoriteButton(a)}${completeButton(a)}${trackButton(a)}</div>`;
+  return `<div class="detail-actions">${watchButton(a)}${readButton(a)}${favoriteButton(a)}${completeButton(a)}${trackButton(a)}</div>`;
 }
 
 function metaChips(a) {
@@ -342,7 +361,7 @@ function cardHtml(a) {
           </div>
         </div>
       </a>
-      <div class="card-track card-actions">${watchButton(a)}${favoriteButton(a)}${completeButton(a)}${trackButton(a)}</div>
+      <div class="card-track card-actions">${watchButton(a)}${readButton(a)}${favoriteButton(a)}${completeButton(a)}${trackButton(a)}</div>
     </article>
   `;
   } catch {
@@ -913,7 +932,7 @@ async function renderSettings() {
         <h3>About</h3>
         <p class="settings-hint">In-app name: <strong>Grey GodZilla Anime App</strong><br>
         Launcher icon name: <strong>GGZ Anime</strong><br>
-        Version: <strong id="settings-version">v1.5.3</strong></p>
+        Version: <strong id="settings-version">v1.5.4</strong></p>
       </section>
     </div>
   `);
@@ -1975,6 +1994,279 @@ function getAhPlayer() {
   }
 }
 
+function setReaderStatus(message, kind = '') {
+  const el = $('#reader-status');
+  if (!el) return;
+  el.textContent = message || '';
+  el.className = `stream-status ${kind}`.trim();
+}
+
+function closeReaderOverlay() {
+  state.reader = {
+    open: false,
+    item: null,
+    mdId: null,
+    chapters: [],
+    currentChapter: null,
+    pages: [],
+    loading: false,
+    error: null,
+    dataSaver: state.reader?.dataSaver !== false,
+    mode: 'chapters',
+  };
+  const overlay = $('#reader-overlay');
+  if (overlay) {
+    overlay.classList.add('hidden');
+    overlay.setAttribute('aria-hidden', 'true');
+  }
+  const pages = $('#reader-pages');
+  if (pages) {
+    pages.innerHTML = '';
+    pages.classList.add('hidden');
+  }
+  const ch = $('#reader-chapters');
+  if (ch) ch.classList.remove('hidden');
+}
+
+function renderReaderChapters() {
+  const list = state.reader.chapters || [];
+  const wrap = $('#reader-chapters');
+  if (!wrap) return;
+  if (!list.length) {
+    wrap.innerHTML = '<p class="week-empty">No English chapters found yet for this title.</p>';
+    return;
+  }
+  const cur = state.reader.currentChapter?.chapter_id;
+  wrap.innerHTML = list.map((c) => {
+    const label = escapeHtml(c.title || (c.chapter != null ? `Chapter ${c.chapter}` : 'Chapter'));
+    const meta = [
+      c.chapter != null ? `Ch ${escapeHtml(String(c.chapter))}` : '',
+      c.pages ? `${c.pages}p` : '',
+      c.volume != null ? `Vol ${escapeHtml(String(c.volume))}` : '',
+    ].filter(Boolean).join(' · ');
+    return `<button type="button" class="reader-ch-btn ${cur === c.chapter_id ? 'active' : ''}"
+      data-reader-chapter="${escapeHtml(c.chapter_id)}"
+      data-reader-chapter-label="${escapeHtml(c.chapter != null ? String(c.chapter) : c.title || '')}">
+      <span>${label}</span>
+      <span class="ch-meta">${meta}</span>
+    </button>`;
+  }).join('');
+}
+
+function showReaderChapterList() {
+  state.reader.mode = 'chapters';
+  state.reader.pages = [];
+  $('#reader-pages')?.classList.add('hidden');
+  $('#reader-chapters')?.classList.remove('hidden');
+  const pages = $('#reader-pages');
+  if (pages) pages.innerHTML = '';
+  setText('#reader-page-label', `${state.reader.chapters.length} chapter(s)`);
+  setReaderStatus('Pick a chapter to read in-app.');
+  renderReaderChapters();
+}
+
+async function openReaderChapter(chapterId, chapterLabel, { autoAdvance = true } = {}) {
+  const api = await waitForApi();
+  if (!api?.get_reader_pages) {
+    setReaderStatus('Reader API unavailable in this build.', 'err');
+    return;
+  }
+  const chapter = (state.reader.chapters || []).find((c) => c.chapter_id === chapterId)
+    || { chapter_id: chapterId, chapter: chapterLabel, title: chapterLabel };
+  state.reader.currentChapter = chapter;
+  state.reader.loading = true;
+  state.reader.mode = 'pages';
+  setReaderStatus(`Loading chapter${chapterLabel ? ` ${chapterLabel}` : ''}…`);
+  $('#reader-chapters')?.classList.add('hidden');
+  const pagesEl = $('#reader-pages');
+  if (pagesEl) {
+    pagesEl.classList.remove('hidden');
+    pagesEl.innerHTML = '<p class="stream-subtitle" style="padding:1rem;text-align:center;">Loading pages…</p>';
+  }
+  renderReaderChapters();
+
+  try {
+    let result = await api.get_reader_pages(chapterId, { dataSaver: state.reader.dataSaver !== false });
+    // Retry opposite quality if empty
+    if ((!result?.pages?.length)) {
+      result = await api.get_reader_pages(chapterId, { dataSaver: !(state.reader.dataSaver !== false) });
+    }
+    state.reader.loading = false;
+    if (!result?.ok || !(result.pages || []).length) {
+      // Auto-skip broken/licensed-empty chapters
+      if (autoAdvance) {
+        const idx = (state.reader.chapters || []).findIndex((c) => c.chapter_id === chapterId);
+        const next = idx >= 0 ? state.reader.chapters[idx + 1] : null;
+        if (next) {
+          setReaderStatus('Chapter unavailable — trying next…');
+          await openReaderChapter(next.chapter_id, next.chapter ?? next.title, { autoAdvance: true });
+          return;
+        }
+      }
+      setReaderStatus(result?.error || 'No pages for this chapter.', 'err');
+      if (pagesEl) {
+        pagesEl.innerHTML = `<p class="week-empty" style="padding:1rem;text-align:center;">${escapeHtml(result?.error || 'No pages')}<br><br>Try another chapter — some titles are official-only.</p>`;
+      }
+      return;
+    }
+    state.reader.pages = result.pages;
+    setText('#reader-page-label', `Ch ${chapter.chapter ?? chapterLabel ?? '—'} · ${result.pages.length} pages`);
+    setReaderStatus('Scroll to read · Next/Prev changes chapter');
+    if (pagesEl) {
+      pagesEl.innerHTML = result.pages.map((p) =>
+        `<img src="${escapeHtml(p.url)}" alt="Page ${p.index}" loading="${p.index <= 3 ? 'eager' : 'lazy'}" decoding="async" referrerpolicy="no-referrer">`,
+      ).join('');
+      pagesEl.scrollTop = 0;
+      $('#reader-body')?.scrollTo?.({ top: 0 });
+    }
+    try {
+      await api.set_read_progress?.(state.reader.mdId, chapterId, chapter.chapter ?? chapterLabel, 1);
+    } catch { /* optional */ }
+  } catch (err) {
+    state.reader.loading = false;
+    setReaderStatus(err?.message || String(err), 'err');
+  }
+}
+
+async function openReaderCatalogFallback(url, title) {
+  const plugin = getAhPlayer();
+  if (plugin?.openUrl && url) {
+    try {
+      await plugin.openUrl({ url, title: title || 'Read' });
+      showToast('Opened catalog in-app browser', 'ok');
+      return true;
+    } catch { /* fall through */ }
+  }
+  return false;
+}
+
+function readerChapterIndex() {
+  const id = state.reader.currentChapter?.chapter_id;
+  if (!id) return -1;
+  return (state.reader.chapters || []).findIndex((c) => c.chapter_id === id);
+}
+
+async function readerStep(delta) {
+  const idx = readerChapterIndex();
+  if (idx < 0) return;
+  const next = state.reader.chapters[idx + delta];
+  if (!next) {
+    setReaderStatus(delta > 0 ? 'End of available chapters.' : 'Already on the first chapter.');
+    return;
+  }
+  await openReaderChapter(next.chapter_id, next.chapter ?? next.title);
+}
+
+async function openReaderOverlay(item) {
+  const api = await waitForApi();
+  if (!api?.resolve_reader && !api?.search_reader) {
+    showToast('Reader not available in this build.', 'err');
+    return;
+  }
+  // Close stream if open
+  try { closeStreamOverlay(); } catch { /* */ }
+
+  state.reader.open = true;
+  state.reader.item = item;
+  state.reader.mdId = null;
+  state.reader.chapters = [];
+  state.reader.currentChapter = null;
+  state.reader.pages = [];
+  state.reader.loading = true;
+  state.reader.mode = 'chapters';
+  state.reader.error = null;
+
+  const overlay = $('#reader-overlay');
+  if (overlay) {
+    overlay.classList.remove('hidden');
+    overlay.setAttribute('aria-hidden', 'false');
+  }
+  const title = titleOf(item);
+  setText('#reader-title', title);
+  setText('#reader-subtitle', 'Finding free chapters…');
+  setText('#reader-page-label', '');
+  setReaderStatus('Matching title for in-app reading…');
+  const ch = $('#reader-chapters');
+  if (ch) {
+    ch.classList.remove('hidden');
+    ch.innerHTML = '<p class="stream-subtitle" style="padding:0.8rem;text-align:center;">Searching free catalog…</p>';
+  }
+  $('#reader-pages')?.classList.add('hidden');
+  const qBtn = $('#reader-quality-btn');
+  if (qBtn) qBtn.textContent = state.reader.dataSaver !== false ? 'Data saver' : 'HQ';
+
+  const titles = [
+    item.title_english,
+    item.title,
+    item.title_japanese,
+    ...(item.title_synonyms || []),
+  ].filter(Boolean);
+
+  try {
+    let resolved = null;
+    if (api.resolve_reader) {
+      resolved = await api.resolve_reader(item.mal_id || item.anilist_id, titles, item.media);
+    }
+    if (!resolved?.ok) {
+      // Fallback: direct search
+      const hit = await api.search_reader?.(titles[0] || title, 8);
+      const first = (hit?.data || [])[0];
+      if (first?.md_id) {
+        resolved = { ok: true, ...first };
+      }
+    }
+    if (!resolved?.ok || !resolved.md_id) {
+      state.reader.loading = false;
+      setReaderStatus(resolved?.error || 'No readable match found.', 'err');
+      setText('#reader-subtitle', 'Not available for in-app reading');
+      if (ch) {
+        ch.innerHTML = `<p class="week-empty" style="padding:1rem;text-align:center;">${escapeHtml(resolved?.error || 'No match')}<br><br>Try searching the English/romaji title.</p>`;
+      }
+      return;
+    }
+
+    state.reader.mdId = resolved.md_id;
+    setText('#reader-title', resolved.title || title);
+    setText('#reader-subtitle', `${resolved.media || item.media || 'manga'} · free in-app reader`);
+    setReaderStatus('Loading chapter list…');
+
+    const feed = await api.get_reader_chapters(resolved.md_id, { limit: 100, language: 'en' });
+    state.reader.loading = false;
+    state.reader.catalogUrl = feed?.catalog_url || resolved.url || `https://mangadex.org/title/${resolved.md_id}`;
+
+    if (!feed?.ok || !(feed.chapters || []).length) {
+      setReaderStatus(feed?.error || 'No chapters found for free in-app reading.', 'err');
+      if (ch) {
+        ch.innerHTML = `
+          <p class="week-empty" style="padding:1rem;text-align:center;">
+            ${escapeHtml(feed?.error || 'No chapters available')}<br><br>
+            Some titles are official-only and can’t host pages here.<br>
+            <button type="button" class="read-btn" id="reader-open-catalog-btn" style="margin-top:0.75rem;">Open catalog in-app</button>
+          </p>`;
+        $('#reader-open-catalog-btn')?.addEventListener('click', () => {
+          openReaderCatalogFallback(state.reader.catalogUrl, resolved.title || title);
+        });
+      }
+      return;
+    }
+    state.reader.chapters = feed.chapters;
+    setText('#reader-page-label', `${feed.chapters.length} chapter(s)`);
+    setReaderStatus('Tap a chapter to read in-app.');
+    renderReaderChapters();
+
+    // Resume last chapter if we have progress
+    try {
+      const prog = await api.get_read_progress?.(resolved.md_id);
+      if (prog?.chapter_id && feed.chapters.some((c) => c.chapter_id === prog.chapter_id)) {
+        setReaderStatus(`Resume available — last: Ch ${prog.chapter || prog.chapter_id}`);
+      }
+    } catch { /* optional */ }
+  } catch (err) {
+    state.reader.loading = false;
+    setReaderStatus(err?.message || String(err), 'err');
+  }
+}
+
 /** Always stays inside the app — never opens Chrome/system browser. */
 async function openInAppPlayer({ gateHash = '', url = '', urls = [], title = 'Watch', referer = 'https://animeheaven.me/' } = {}) {
   const plugin = getAhPlayer();
@@ -2279,6 +2571,30 @@ function init() {
       return;
     }
 
+    const readBtn = e.target.closest('[data-read-mal-id]');
+    if (readBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const malId = Number(readBtn.dataset.readMalId) || readBtn.dataset.readMalId;
+      const item = findAnimeById(malId) || {
+        mal_id: malId,
+        title: readBtn.dataset.readTitle,
+        media: 'manga',
+      };
+      // Ensure print media so reader path is used
+      if (!item.media || item.media === 'anime') item.media = 'manga';
+      openReaderOverlay(item);
+      return;
+    }
+
+    const readerCh = e.target.closest('[data-reader-chapter]');
+    if (readerCh) {
+      e.preventDefault();
+      e.stopPropagation();
+      openReaderChapter(readerCh.dataset.readerChapter, readerCh.dataset.readerChapterLabel);
+      return;
+    }
+
     const favBtn = e.target.closest('[data-fav-id]');
     if (favBtn) {
       e.preventDefault();
@@ -2321,6 +2637,27 @@ function init() {
   $('#stream-overlay')?.addEventListener('click', (e) => {
     if (e.target.id === 'stream-overlay') closeStreamOverlay();
   });
+
+  $('#reader-close-btn')?.addEventListener('click', closeReaderOverlay);
+  $('#reader-back-btn')?.addEventListener('click', () => showReaderChapterList());
+  $('#reader-prev-btn')?.addEventListener('click', () => readerStep(-1));
+  $('#reader-next-btn')?.addEventListener('click', () => readerStep(1));
+  $('#reader-quality-btn')?.addEventListener('click', async () => {
+    state.reader.dataSaver = !(state.reader.dataSaver !== false);
+    const qBtn = $('#reader-quality-btn');
+    if (qBtn) qBtn.textContent = state.reader.dataSaver ? 'Data saver' : 'HQ';
+    if (state.reader.mode === 'pages' && state.reader.currentChapter) {
+      await openReaderChapter(
+        state.reader.currentChapter.chapter_id,
+        state.reader.currentChapter.chapter ?? state.reader.currentChapter.title,
+      );
+    } else {
+      showToast(state.reader.dataSaver ? 'Data saver pages on' : 'HQ pages on', 'ok');
+    }
+  });
+  $('#reader-overlay')?.addEventListener('click', (e) => {
+    if (e.target.id === 'reader-overlay') closeReaderOverlay();
+  });
   document.addEventListener('fullscreenchange', () => {
     if (!document.fullscreenElement) {
       $('#stream-overlay')?.classList.remove('is-fullscreen');
@@ -2331,6 +2668,15 @@ function init() {
     }
   });
   document.addEventListener('keydown', (e) => {
+    if (state.reader.open) {
+      if (e.key === 'Escape') {
+        if (state.reader.mode === 'pages') showReaderChapterList();
+        else closeReaderOverlay();
+      }
+      if (e.key === 'ArrowRight') readerStep(1);
+      if (e.key === 'ArrowLeft') readerStep(-1);
+      return;
+    }
     if (!state.stream.open) return;
     if (e.key === 'Escape') {
       if (document.fullscreenElement || $('#stream-overlay')?.classList.contains('is-fullscreen')) {
