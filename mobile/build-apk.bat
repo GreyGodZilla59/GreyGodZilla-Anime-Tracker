@@ -46,8 +46,8 @@ echo SUCCESS
 echo APK: %APK%
 
 if exist "C:\Scripts\Releases\Copy-To-FinalDistro.bat" (
-  copy /Y "%APK%" "%TEMP%\Grey GodZilla Anime Tracker v1.4.2-android.apk" >nul
-  call "C:\Scripts\Releases\Copy-To-FinalDistro.bat" "%TEMP%\Grey GodZilla Anime Tracker v1.4.2-android.apk"
+  copy /Y "%APK%" "%TEMP%\Grey GodZilla Anime Tracker v1.4.3-android.apk" >nul
+  call "C:\Scripts\Releases\Copy-To-FinalDistro.bat" "%TEMP%\Grey GodZilla Anime Tracker v1.4.3-android.apk"
 )
 
 echo.

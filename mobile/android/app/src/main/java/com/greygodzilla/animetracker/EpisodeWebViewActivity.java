@@ -1,9 +1,9 @@
 package com.greygodzilla.animetracker;
 
 import android.annotation.SuppressLint;
-import android.app.Activity;
 import android.graphics.Color;
 import android.os.Bundle;
+import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
@@ -12,12 +12,17 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+import android.widget.ImageButton;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+
+import androidx.appcompat.app.AppCompatActivity;
 
 /**
- * Free in-app player: load AnimeHeaven on its own domain so cookies,
- * Referer, and their built-in video player all work (no paid APIs).
+ * In-app fallback player: WebView of AnimeHeaven with Grey GodZilla chrome.
+ * Does NOT open Chrome or leave the app process.
  */
-public class EpisodeWebViewActivity extends Activity {
+public class EpisodeWebViewActivity extends AppCompatActivity {
     private WebView webView;
     private static final String AH = "https://animeheaven.me";
     private static final String UA =
@@ -29,17 +34,55 @@ public class EpisodeWebViewActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        FrameLayout root = new FrameLayout(this);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.parseColor("#0a0a0a"));
-        root.setLayoutParams(new FrameLayout.LayoutParams(
+        root.setLayoutParams(new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
         ));
 
-        webView = new WebView(this);
-        root.addView(webView, new FrameLayout.LayoutParams(
+        // Top bar — keep branding so it feels like our app
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setBackgroundColor(Color.parseColor("#141414"));
+        bar.setPadding(16, 24, 16, 16);
+        LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        root.addView(bar, barLp);
+
+        ImageButton close = new ImageButton(this);
+        close.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
+        close.setBackgroundColor(Color.TRANSPARENT);
+        close.setColorFilter(Color.parseColor("#f5f5f5"));
+        close.setOnClickListener(v -> finish());
+        bar.addView(close, new LinearLayout.LayoutParams(96, 96));
+
+        LinearLayout titles = new LinearLayout(this);
+        titles.setOrientation(LinearLayout.VERTICAL);
+        titles.setPadding(16, 0, 0, 0);
+        TextView brand = new TextView(this);
+        brand.setText("Grey GodZilla · in-app");
+        brand.setTextColor(Color.parseColor("#ff6a00"));
+        brand.setTextSize(12f);
+        TextView title = new TextView(this);
+        String t = getIntent().getStringExtra("title");
+        title.setText(t != null && !t.isEmpty() ? t : "Watch");
+        title.setTextColor(Color.parseColor("#f5f5f5"));
+        title.setTextSize(15f);
+        title.setMaxLines(1);
+        titles.addView(brand);
+        titles.addView(title);
+        bar.addView(titles, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        webView = new WebView(this);
+        root.addView(webView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                0,
+                1f
         ));
         setContentView(root);
 
@@ -65,7 +108,6 @@ public class EpisodeWebViewActivity extends Activity {
 
         if (gateHash != null && !gateHash.trim().isEmpty()) {
             String key = gateHash.trim();
-            // Set session cookie the same way the site's gatea() does.
             cookies.setCookie(AH, "key=" + key + "; Path=/");
             cookies.setCookie(AH + "/", "key=" + key + "; Path=/");
             cookies.flush();

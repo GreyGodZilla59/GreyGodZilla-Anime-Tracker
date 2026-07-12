@@ -1736,25 +1736,40 @@ function getAhPlayer() {
   }
 }
 
-async function openAhWebPlayer({ gateHash = '', url = '', title = 'Watch' } = {}) {
+/** Always stays inside the app — never opens Chrome/system browser. */
+async function openInAppPlayer({ gateHash = '', url = '', urls = [], title = 'Watch', referer = 'https://animeheaven.me/' } = {}) {
   const plugin = getAhPlayer();
-  if (plugin?.openEpisode) {
-    await plugin.openEpisode({ gateHash: gateHash || '', url: url || '', title: title || 'Watch' });
+  if (!plugin) return { ok: false, error: 'Native player not available' };
+
+  // Preferred: native ExoPlayer with Referer (true in-app video)
+  const list = Array.isArray(urls) ? urls.filter(Boolean) : [];
+  if (url && !list.includes(url)) list.unshift(url);
+  if (list.length && plugin.playNative) {
+    await plugin.playNative({
+      urls: list,
+      url: list[0],
+      referer: referer || 'https://animeheaven.me/',
+      title: title || 'Watch',
+    });
+    return { ok: true, mode: 'native' };
+  }
+
+  // Fallback: in-app WebView with Grey GodZilla title bar (still our app)
+  if (plugin.openEpisode) {
+    await plugin.openEpisode({
+      gateHash: gateHash || '',
+      url: url || list[0] || '',
+      title: title || 'Watch',
+    });
     return { ok: true, mode: 'webview' };
   }
-  // Free fallback: system browser / external Chrome tab
-  const target = url || (gateHash ? `https://animeheaven.me/gate.php` : 'https://animeheaven.me/');
-  if (window.Capacitor?.Plugins?.Browser?.open) {
-    await window.Capacitor.Plugins.Browser.open({ url: target });
-    return { ok: true, mode: 'browser' };
-  }
-  window.open(target, '_blank');
-  return { ok: true, mode: 'window' };
+  return { ok: false, error: 'No in-app player methods' };
 }
 
 async function playStreamEpisode(episode, gateHash) {
   const api = await waitForApi();
   const video = $('#stream-video');
+  const isNative = !!(getAhPlayer() || window.Capacitor?.isNativePlatform?.());
 
   await flushWatchProgress();
   stopProgressTracking();
@@ -1762,110 +1777,109 @@ async function playStreamEpisode(episode, gateHash) {
   state.stream.currentEp = episode;
   state.stream.loading = true;
   renderStreamEpisodes();
-  setStreamStatus(`Loading episode ${episode}...`);
+  setStreamStatus(`Loading episode ${episode}…`);
   $('#stream-ep-label').textContent = `Episode ${episode}`;
 
   const showUrl = state.stream.showUrl || state.stream.ahUrl || '';
   const title = state.stream.anime ? titleOf(state.stream.anime) : 'Watch';
+  const epTitle = `${title} · Ep ${episode}`;
 
-  // Android free path: open AnimeHeaven on its own domain (cookies + their player).
-  // Extracted MP4 URLs fail in <video> because CDN requires Referer headers.
-  if (getAhPlayer() || window.Capacitor?.isNativePlatform?.()) {
-    state.stream.loading = false;
+  // Resolve stream URLs (with Referer-capable native player on Android)
+  let result = null;
+  if (api?.get_stream_sources) {
     try {
-      await openAhWebPlayer({ gateHash, url: showUrl, title: `${title} · Ep ${episode}` });
-      setStreamStatus(`Episode ${episode} opened in free AnimeHeaven player. Press back to return.`);
-      // Soft progress mark so history still works
-      try {
-        await api?.set_watch_progress?.(state.stream.anime?.mal_id, episode, 1, 0);
-      } catch { /* optional */ }
+      result = await api.get_stream_sources(gateHash);
     } catch (e) {
-      setStreamStatus(`Player open failed: ${e?.message || e}. Use Open on AnimeHeaven.me`, 'err');
+      result = { ok: false, error: String(e?.message || e) };
     }
-    return;
   }
-
-  if (!api?.get_stream_sources || !video) {
-    setStreamStatus('Streaming not available — use Open on AnimeHeaven.me', 'err');
-    return;
-  }
-
-  const result = await api.get_stream_sources(gateHash);
   state.stream.loading = false;
 
-  if (!result?.ok) {
-    // Last resort: open show page
-    if (showUrl) {
-      await openAhWebPlayer({ url: showUrl, title });
-      setStreamStatus('Opened AnimeHeaven show page.', '');
+  const candidates = [];
+  const pushSrc = (u) => {
+    if (u && !String(u).includes('&error') && !candidates.includes(u)) candidates.push(u);
+  };
+  if (result?.ok) {
+    pushSrc(result.playback_url);
+    pushSrc(result.primary);
+    (result.sources || []).forEach(pushSrc);
+  }
+
+  // --- Android: always stay in-app ---
+  if (isNative && getAhPlayer()) {
+    try {
+      if (candidates.length) {
+        const opened = await openInAppPlayer({
+          urls: candidates,
+          title: epTitle,
+          referer: result?.referer || 'https://animeheaven.me/',
+          gateHash,
+          url: showUrl,
+        });
+        if (opened.ok) {
+          setStreamStatus(
+            opened.mode === 'native'
+              ? `Playing episode ${episode} in-app. Close player (X) to return.`
+              : `Episode ${episode} in-app player. Close (X) to return.`,
+          );
+          try {
+            await api?.set_watch_progress?.(state.stream.anime?.mal_id, episode, 1, 0);
+          } catch { /* optional */ }
+          return;
+        }
+      }
+      // No CDN urls — still in-app WebView with cookie for gate.php
+      await openInAppPlayer({ gateHash, url: showUrl, title: epTitle });
+      setStreamStatus(`Episode ${episode} in-app. Close (X) to return.`);
+      return;
+    } catch (e) {
+      setStreamStatus(`In-app player error: ${e?.message || e}`, 'err');
       return;
     }
-    setStreamStatus(result?.error || 'Could not load stream.', 'err');
+  }
+
+  // --- Desktop / web fallback: HTML5 video ---
+  if (!candidates.length || !video) {
+    setStreamStatus(result?.error || 'No playable sources for this episode.', 'err');
     return;
   }
 
   let resumeAt = 0;
   try {
     const saved = await api.get_watch_progress?.(state.stream.anime?.mal_id, episode);
-    if (saved?.seconds && saved.seconds > 5) {
-      resumeAt = Number(saved.seconds);
-    }
-  } catch {
-    resumeAt = 0;
-  }
-
-  const candidates = [];
-  const pushSrc = (u) => {
-    if (u && !candidates.includes(u)) candidates.push(u);
-  };
-  pushSrc(result.playback_url);
-  pushSrc(result.primary);
-  (result.sources || []).forEach(pushSrc);
-
-  if (!candidates.length) {
-    setStreamStatus('No playable sources — use Open on AnimeHeaven.me', 'err');
-    return;
-  }
+    if (saved?.seconds && saved.seconds > 5) resumeAt = Number(saved.seconds);
+  } catch { resumeAt = 0; }
 
   let srcIndex = 0;
   const tryPlay = async (idx) => {
     const src = candidates[idx];
     if (!src) {
-      setStreamStatus('Playback failed — try Open on AnimeHeaven.me', 'err');
+      setStreamStatus('Playback failed for this episode.', 'err');
       return;
     }
     video.removeAttribute('crossorigin');
     video.setAttribute('playsinline', '');
-    video.setAttribute('webkit-playsinline', '');
     video.src = src;
     video.load();
     try {
       await video.play();
-      if (!resumeAt) setStreamStatus(`Now playing episode ${episode} · via AnimeHeaven.me`);
+      if (!resumeAt) setStreamStatus(`Now playing episode ${episode}`);
       startProgressTracking();
     } catch {
-      setStreamStatus(resumeAt ? 'Press play to resume where you left off.' : 'Press play to start — stream is ready.', '');
+      setStreamStatus('Press play to start.', '');
       startProgressTracking();
     }
   };
-
   video.onerror = () => {
     srcIndex += 1;
-    if (srcIndex < candidates.length) {
-      setStreamStatus(`Retrying stream source ${srcIndex + 1}/${candidates.length}...`);
-      tryPlay(srcIndex);
-    } else {
-      setStreamStatus('Playback failed — try Open on AnimeHeaven.me', 'err');
-    }
+    if (srcIndex < candidates.length) tryPlay(srcIndex);
+    else setStreamStatus('Playback failed for this episode.', 'err');
   };
-
   video.onloadedmetadata = () => {
     if (resumeAt > 0 && resumeAt < (video.duration || Infinity) - 15) {
       video.currentTime = resumeAt;
-      setStreamStatus(`Resumed episode ${episode} at ${Math.floor(resumeAt / 60)}:${String(Math.floor(resumeAt % 60)).padStart(2, '0')}`);
     }
   };
-
   await tryPlay(0);
 }
 
@@ -1924,7 +1938,7 @@ async function openStreamOverlay(anime) {
     ahLink.onclick = (e) => {
       if (getAhPlayer()) {
         e.preventDefault();
-        openAhWebPlayer({ url: state.stream.showUrl, title: resolved.title || title });
+        openInAppPlayer({ url: state.stream.showUrl, title: resolved.title || title });
       }
     };
   }

@@ -25,7 +25,17 @@
 
         </activity>
 
-        <!-- Free in-app AnimeHeaven WebView player (no paid APIs) -->
+        <!-- Free in-app native player (ExoPlayer + Referer) — never leaves app -->
+        <activity
+            android:name=".NativePlayerActivity"
+            android:label="Watch"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode"
+            android:hardwareAccelerated="true"
+            android:theme="@style/AppTheme.NoActionBar"
+            android:exported="false"
+            android:supportsPictureInPicture="false" />
+
+        <!-- Free in-app WebView fallback with Grey GodZilla chrome -->
         <activity
             android:name=".EpisodeWebViewActivity"
             android:label="Watch"
