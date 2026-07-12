@@ -1,0 +1,23 @@
+{
+  "name": "greygodzilla-anime-tracker-android",
+  "version": "1.4.0",
+  "description": "Grey GodZilla Anime Tracker — Android APK (full app, free sideload)",
+  "private": true,
+  "scripts": {
+    "cap:sync": "npx cap sync android",
+    "cap:open": "npx cap open android",
+    "build:web": "node -e \"console.log('www/ is the web root — already static')\"",
+    "build:apk": "cd android && .\\gradlew.bat assembleDebug",
+    "build:release": "cd android && .\\gradlew.bat assembleRelease"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/core": "^6.2.0",
+    "@capacitor/app": "^6.0.2",
+    "@capacitor/status-bar": "^6.0.2",
+    "@capacitor/splash-screen": "^6.0.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.0"
+  }
+}

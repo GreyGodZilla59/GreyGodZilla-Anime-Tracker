@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1">
+  <meta name="theme-color" content="#0a0a0a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <title>Grey GodZilla Anime Tracker</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/mobile.css">
+</head>
+<body class="app-shell is-mobile">
+  <div class="bg-glow"></div>
+
+  <header class="header">
+    <div class="header-accent"></div>
+    <div class="header-inner">
+      <div class="brand">
+        <img class="brand-logo" src="assets/greygodzilla_logo.png" alt="Grey GodZilla">
+        <div class="brand-text">
+          <div class="brand-row">
+            <h1>Grey GodZilla</h1>
+            <span class="version-badge" id="version-badge">v1.4.0</span>
+          </div>
+          <p class="brand-sub">Android · Track · Stream · Favorites</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button type="button" class="refresh-btn" id="refresh-btn" title="Force refresh schedules">
+          ↻ Refresh
+        </button>
+        <div class="status-pill" id="status-pill">
+          <span class="status-dot"></span>
+          <span id="status-text">Starting</span>
+        </div>
+        <div class="search-cluster">
+          <div class="search-box">
+            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+            </svg>
+            <input type="search" id="search" placeholder="Search anime, manga, manhwa..." autocomplete="off">
+          </div>
+          <div class="search-filters" id="search-filters">
+            <select id="filter-media" title="Media type" aria-label="Media type">
+              <option value="anime">Anime</option>
+              <option value="manga">Manga</option>
+              <option value="manhwa">Manhwa</option>
+              <option value="webtoon">Webtoon</option>
+              <option value="manhua">Manhua</option>
+            </select>
+            <select id="filter-type" title="Format" aria-label="Format">
+              <option value="any">All formats</option>
+              <option value="tv">TV</option>
+              <option value="movie">Movie</option>
+              <option value="ova">OVA</option>
+              <option value="ona">ONA</option>
+              <option value="special">Special</option>
+            </select>
+            <select id="filter-status" title="Status" aria-label="Status">
+              <option value="any">Any status</option>
+              <option value="airing">Airing / Publishing</option>
+              <option value="complete">Finished</option>
+              <option value="upcoming">Upcoming</option>
+            </select>
+            <select id="filter-order" title="Sort" aria-label="Sort">
+              <option value="popularity">Popular</option>
+              <option value="score">Score</option>
+              <option value="title">Title</option>
+              <option value="start_date">Start date</option>
+            </select>
+            <select id="filter-score" title="Min score" aria-label="Minimum score">
+              <option value="0">Any score</option>
+              <option value="7">7+</option>
+              <option value="8">8+</option>
+              <option value="9">9+</option>
+            </select>
+            <button type="button" class="search-go-btn" id="search-go-btn" title="Search database">Search</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <section class="stats-bar" id="stats-bar">
+    <div class="stat-tile"><span class="stat-label">Today</span><span class="stat-value" id="stat-daily">—</span></div>
+    <div class="stat-tile"><span class="stat-label">This Week</span><span class="stat-value" id="stat-weekly">—</span></div>
+    <div class="stat-tile"><span class="stat-label">This Month</span><span class="stat-value" id="stat-monthly">—</span></div>
+    <div class="stat-tile"><span class="stat-label">This Year</span><span class="stat-value" id="stat-yearly">—</span></div>
+    <div class="stat-tile"><span class="stat-label">Favorites</span><span class="stat-value" id="stat-favorites">—</span></div>
+    <div class="stat-tile"><span class="stat-label">Completed</span><span class="stat-value" id="stat-history">—</span></div>
+  </section>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="daily" role="tab">
+      <span class="tab-label">Today</span>
+      <span class="tab-count" id="count-daily">—</span>
+    </button>
+    <button class="tab" data-tab="weekly" role="tab">
+      <span class="tab-label">This Week</span>
+      <span class="tab-count" id="count-weekly">—</span>
+    </button>
+    <button class="tab" data-tab="monthly" role="tab">
+      <span class="tab-label">This Month</span>
+      <span class="tab-count" id="count-monthly">—</span>
+    </button>
+    <button class="tab" data-tab="yearly" role="tab">
+      <span class="tab-label">This Year</span>
+      <span class="tab-count" id="count-yearly">—</span>
+    </button>
+    <button class="tab" data-tab="now" role="tab">
+      <span class="tab-label">Airing Now</span>
+      <span class="tab-count" id="count-now">—</span>
+    </button>
+    <button class="tab" data-tab="upcoming" role="tab">
+      <span class="tab-label">Upcoming</span>
+      <span class="tab-count" id="count-upcoming">—</span>
+    </button>
+    <button class="tab" data-tab="favorites" role="tab">
+      <span class="tab-label">Favorites</span>
+      <span class="tab-count" id="count-favorites">—</span>
+    </button>
+    <button class="tab" data-tab="history" role="tab">
+      <span class="tab-label">History</span>
+      <span class="tab-count" id="count-history">—</span>
+    </button>
+    <button class="tab" data-tab="search" role="tab">
+      <span class="tab-label">Database</span>
+      <span class="tab-count" id="count-search">—</span>
+    </button>
+    <button class="tab" data-tab="webhooks" role="tab">
+      <span class="tab-label">Webhooks</span>
+      <span class="tab-count" id="count-webhooks">—</span>
+    </button>
+  </nav>
+
+  <div id="subheader" class="subheader hidden"></div>
+
+  <main class="main">
+    <div id="loading" class="loading">
+      <div class="spinner"></div>
+      <p id="loading-text">Loading today's releases...</p>
+    </div>
+
+    <div id="error" class="error hidden">
+      <p id="error-message">Something went wrong.</p>
+      <button id="retry-btn" class="retry-btn">Try Again</button>
+    </div>
+
+    <div id="content" class="content hidden"></div>
+    <div id="empty" class="empty hidden">
+      <p id="empty-message">Nothing to show.</p>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <p id="app-version-line"><strong>Grey GodZilla</strong> · Anime Tracker Android</p>
+    <p>Data from <a href="https://anilist.co" target="_blank" rel="noopener">AniList</a> · Streaming via <a href="https://animeheaven.me" target="_blank" rel="noopener">AnimeHeaven.me</a></p>
+    <p class="updated" id="last-updated"></p>
+  </footer>
+
+  <div id="stream-overlay" class="stream-overlay hidden" aria-hidden="true">
+    <div class="stream-panel" id="stream-panel">
+      <div class="stream-header">
+        <div>
+          <h2 id="stream-title">Watch</h2>
+          <p id="stream-subtitle" class="stream-subtitle"></p>
+        </div>
+        <div class="stream-header-actions">
+          <button type="button" class="stream-tool-btn" id="stream-fullscreen-btn" title="Fullscreen">⛶ Fullscreen</button>
+          <button type="button" class="stream-close" id="stream-close-btn" aria-label="Close player">✕</button>
+        </div>
+      </div>
+      <div id="stream-status" class="stream-status"></div>
+      <div class="stream-player-wrap" id="stream-player-wrap">
+        <video id="stream-video" class="stream-video" controls playsinline webkit-playsinline></video>
+      </div>
+      <div class="stream-meta">
+        <a id="stream-ah-link" href="https://animeheaven.me" target="_blank" rel="noopener">Open on AnimeHeaven.me</a>
+        <span id="stream-ep-label" class="stream-ep-label"></span>
+      </div>
+      <div id="stream-episodes" class="stream-episodes"></div>
+    </div>
+  </div>
+
+  <!-- JS API first (provides window.pywebview.api), then UI -->
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
