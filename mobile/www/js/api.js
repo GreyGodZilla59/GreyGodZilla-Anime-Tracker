@@ -403,6 +403,8 @@ fragment MediaFields on Media {
       synopsis: item.synopsis || '',
       media: item.media || 'anime',
       aired_from: item.aired_from,
+      next_episode: item.next_episode || null,
+      next_airing_at: item.next_airing_at || null,
     };
   }
 
