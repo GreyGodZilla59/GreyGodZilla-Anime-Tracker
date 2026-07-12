@@ -1,20 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/player_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#0a0a0a"
     android:orientation="vertical">
 
-    <!-- App chrome so playback stays "inside" Grey GodZilla -->
     <LinearLayout
+        android:id="@+id/player_toolbar"
         android:layout_width="match_parent"
         android:layout_height="48dp"
         android:background="#141414"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingStart="8dp"
-        android:paddingEnd="8dp">
+        android:paddingStart="4dp"
+        android:paddingEnd="4dp">
 
         <ImageButton
             android:id="@+id/btn_close"
@@ -28,7 +29,7 @@
         <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
+            android:layout_marginStart="6dp"
             android:layout_weight="1"
             android:orientation="vertical">
 
@@ -38,9 +39,9 @@
                 android:layout_height="wrap_content"
                 android:ellipsize="end"
                 android:maxLines="1"
-                android:text="Grey GodZilla"
+                android:text="Grey GodZilla Anime App"
                 android:textColor="#ff6a00"
-                android:textSize="12sp"
+                android:textSize="11sp"
                 android:textStyle="bold" />
 
             <TextView
@@ -51,8 +52,26 @@
                 android:maxLines="1"
                 android:text="Now playing"
                 android:textColor="#f5f5f5"
-                android:textSize="14sp" />
+                android:textSize="13sp" />
         </LinearLayout>
+
+        <ImageButton
+            android:id="@+id/btn_rotate"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Rotate"
+            android:src="@android:drawable/ic_menu_always_landscape_portrait"
+            android:tint="#f5f5f5" />
+
+        <ImageButton
+            android:id="@+id/btn_fullscreen"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Fullscreen"
+            android:src="@android:drawable/ic_menu_crop"
+            android:tint="#f5f5f5" />
     </LinearLayout>
 
     <androidx.media3.ui.PlayerView

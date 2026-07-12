@@ -6,7 +6,7 @@
   'use strict';
 
   const APP_NAME = 'Grey GodZilla Anime Tracker';
-  const APP_VERSION = '1.4.3-android';
+  const APP_VERSION = '1.5.0';
   const APP_PUBLISHER = 'Grey GodZilla';
   const ANILIST_URL = 'https://graphql.anilist.co';
   const AH_BASE = 'https://animeheaven.me';
@@ -38,7 +38,30 @@ fragment MediaFields on Media {
     cache: 'gg_cache_v1',
     webhook: 'gg_webhook_v1',
     webhookState: 'gg_webhook_state_v1',
+    notify: 'gg_notify_settings_v1',
   };
+
+  const DEFAULT_NOTIFY = {
+    enabled: true,
+    // Minutes before drop (per media family)
+    lead_anime: 30,
+    lead_manga: 60,
+    lead_manhwa: 60,
+    lead_webtoon: 60,
+    lead_manhua: 60,
+    lead_novel: 60,
+    lead_default: 30,
+  };
+
+  function getNotifySettings() {
+    return { ...DEFAULT_NOTIFY, ...loadJSON(LS.notify, {}) };
+  }
+
+  function saveNotifySettings(partial) {
+    const next = { ...getNotifySettings(), ...partial };
+    saveJSON(LS.notify, next);
+    return next;
+  }
 
   function todayKey() {
     const d = new Date();
@@ -153,6 +176,7 @@ fragment MediaFields on Media {
       broadcast_day: broadcastDay,
       broadcast_time: broadcastTime,
       next_episode: nextEp.episode,
+      next_airing_at: nextEp.airingAt || null,
       score: score ? Math.round((score / 10) * 100) / 100 : null,
       rank: null,
       popularity: item.popularity,
@@ -445,11 +469,42 @@ fragment MediaFields on Media {
     async get_app_info() {
       return {
         name: APP_NAME,
+        display_name: 'Grey GodZilla Anime App',
+        launcher_name: 'GGZ Anime',
         version: APP_VERSION,
         publisher: APP_PUBLISHER,
-        title: `${APP_NAME} v${APP_VERSION}`,
+        title: `Grey GodZilla Anime App v${APP_VERSION}`,
         platform: 'android',
       };
+    },
+
+    async get_notify_settings() {
+      return getNotifySettings();
+    },
+    async save_notify_settings(cfg) {
+      const cleaned = {
+        enabled: !!(cfg && cfg.enabled),
+        lead_anime: Math.max(1, Math.min(24 * 60, Number(cfg?.lead_anime) || 30)),
+        lead_manga: Math.max(1, Math.min(24 * 60, Number(cfg?.lead_manga) || 60)),
+        lead_manhwa: Math.max(1, Math.min(24 * 60, Number(cfg?.lead_manhwa) || 60)),
+        lead_webtoon: Math.max(1, Math.min(24 * 60, Number(cfg?.lead_webtoon) || 60)),
+        lead_manhua: Math.max(1, Math.min(24 * 60, Number(cfg?.lead_manhua) || 60)),
+        lead_novel: Math.max(1, Math.min(24 * 60, Number(cfg?.lead_novel) || 60)),
+        lead_default: Math.max(1, Math.min(24 * 60, Number(cfg?.lead_default) || 30)),
+      };
+      return { ok: true, settings: saveNotifySettings(cleaned) };
+    },
+
+    leadMinutesForMedia(media) {
+      const s = getNotifySettings();
+      const m = String(media || 'anime').toLowerCase();
+      if (m === 'anime') return s.lead_anime;
+      if (m === 'manga') return s.lead_manga;
+      if (m === 'manhwa') return s.lead_manhwa;
+      if (m === 'webtoon') return s.lead_webtoon;
+      if (m === 'manhua') return s.lead_manhua;
+      if (m === 'novel') return s.lead_novel;
+      return s.lead_default;
     },
 
     async get_bootstrap() {

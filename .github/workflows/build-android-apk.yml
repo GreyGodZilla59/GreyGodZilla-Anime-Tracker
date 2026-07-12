@@ -48,12 +48,12 @@ jobs:
         run: |
           mkdir -p dist
           cp android/app/build/outputs/apk/debug/app-debug.apk \
-            "dist/Grey GodZilla Anime Tracker v1.4.3-android.apk"
+            "dist/GGZ Anime v1.5.0-android.apk"
           ls -lh dist/
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Grey-GodZilla-Anime-Tracker-v1.4.3-android
-          path: mobile/dist/Grey GodZilla Anime Tracker v1.4.3-android.apk
+          name: GGZ-Anime-v1.5.0-android
+          path: mobile/dist/GGZ Anime v1.5.0-android.apk
           if-no-files-found: error

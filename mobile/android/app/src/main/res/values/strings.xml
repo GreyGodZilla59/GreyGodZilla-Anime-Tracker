@@ -1,7 +1,8 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">Grey GodZilla Anime Tracker</string>
-    <string name="title_activity_main">Grey GodZilla Anime Tracker</string>
+    <!-- Launcher / home screen name only -->
+    <string name="app_name">GGZ Anime</string>
+    <string name="title_activity_main">GGZ Anime</string>
     <string name="package_name">com.greygodzilla.animetracker</string>
     <string name="custom_url_scheme">com.greygodzilla.animetracker</string>
 </resources>

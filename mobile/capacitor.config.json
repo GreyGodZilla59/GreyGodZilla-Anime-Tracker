@@ -1,6 +1,6 @@
 {
   "appId": "com.greygodzilla.animetracker",
-  "appName": "Grey GodZilla Anime Tracker",
+  "appName": "GGZ Anime",
   "webDir": "www",
   "android": {
     "allowMixedContent": true,

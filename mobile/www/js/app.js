@@ -95,31 +95,15 @@ function setStatus(text, kind = '') {
 }
 
 function updateStats() {
-  const daily = state.bootstrap?.today?.length ?? '—';
-  const weeklyTotal = state.weekly
-    ? (state.weekly.total
-      || Object.values(state.weekly.schedule || {}).reduce((n, arr) => n + arr.length, 0))
-    : '—';
-  const monthlyTotal = state.monthly
-    ? (state.monthly.release_count
-      || (state.monthly.premieres?.length || 0) + (state.monthly.ongoing?.length || 0))
-    : '—';
-  const yearlyTotal = state.yearly
-    ? (state.yearly.premieres?.length || 0) + (state.yearly.announced_tba?.length || 0)
-    : '—';
-
-  $('#stat-daily').textContent = daily;
-  $('#stat-weekly').textContent = weeklyTotal;
-  $('#stat-monthly').textContent = monthlyTotal;
-  $('#stat-yearly').textContent = yearlyTotal;
-  const favEl = $('#stat-favorites');
-  const histEl = $('#stat-history');
-  if (favEl) favEl.textContent = state.favorites.length;
-  if (histEl) histEl.textContent = state.history.length;
-  const countFav = $('#count-favorites');
-  const countHist = $('#count-history');
-  if (countFav) countFav.textContent = state.favorites.length;
-  if (countHist) countHist.textContent = state.history.length;
+  // Stats bar removed for a calmer UI — only tab badges remain.
+  const setText = (sel, val) => {
+    const el = $(sel);
+    if (el) el.textContent = val;
+  };
+  setText('#count-favorites', state.favorites.length);
+  setText('#count-history', state.history.length);
+  setText('#stat-favorites', state.favorites.length);
+  setText('#stat-history', state.history.length);
 }
 
 function setSubheader(html) {
@@ -347,8 +331,9 @@ function renderDaily() {
   const list = (state.bootstrap?.today || []).filter((a) => matchesSearch(a, q));
   const day = state.bootstrap?.today_name || getTodayDay();
 
-  setSubheader(`<strong>${DAY_LABELS[day] || day}</strong> · Episodes airing today · ${list.length} shows`);
-  $('#count-daily').textContent = state.bootstrap?.today?.length ?? '—';
+  setSubheader(`<strong>${DAY_LABELS[day] || day}</strong> · ${list.length} shows today`);
+  const cd = $('#count-daily');
+  if (cd) cd.textContent = state.bootstrap?.today?.length ?? '—';
 
   if (!list.length) {
     showEmpty(q ? 'No matches for your search today.' : 'Nothing scheduled for today in the database.');
@@ -725,7 +710,8 @@ function renderYearly() {
 function renderSeason(which) {
   const q = state.search.trim().toLowerCase();
   const list = (state.bootstrap?.[which] || state.season[which] || []).filter((a) => matchesSearch(a, q));
-  $(`#count-${which}`).textContent = list.length || state.bootstrap?.[which]?.length || '—';
+  const countEl = $(`#count-${which}`);
+  if (countEl) countEl.textContent = list.length || state.bootstrap?.[which]?.length || '—';
 
   const label = which === 'now' ? 'Current season' : 'Next season';
   setSubheader(`<strong>${label}</strong> · ${list.length} shows`);
@@ -737,10 +723,109 @@ function renderSeason(which) {
   showContent(`<div class="grid">${list.map(cardHtml).join('')}</div>`);
 }
 
-function renderWebhooks() {
+const LEAD_OPTIONS = [
+  [5, '5 min'],
+  [15, '15 min'],
+  [30, '30 min'],
+  [60, '1 hour'],
+  [120, '2 hours'],
+  [360, '6 hours'],
+  [720, '12 hours'],
+  [1440, '24 hours'],
+];
+
+function leadSelect(id, value) {
+  const v = Number(value) || 30;
+  return `<select id="${id}">${LEAD_OPTIONS.map(([m, label]) =>
+    `<option value="${m}" ${v === m ? 'selected' : ''}>${label} before</option>`).join('')}</select>`;
+}
+
+function getNotifyPlugin() {
+  try {
+    return window.Capacitor?.Plugins?.GgzNotify || null;
+  } catch {
+    return null;
+  }
+}
+
+async function syncLocalNotifications() {
+  const api = await waitForApi();
+  const plugin = getNotifyPlugin();
+  if (!api || !plugin) return { scheduled: 0 };
+
+  const settings = await api.get_notify_settings?.() || {};
+  if (!settings.enabled) {
+    try { await plugin.cancelAll?.(); } catch { /* */ }
+    return { scheduled: 0, disabled: true };
+  }
+
+  try {
+    await plugin.requestPermission?.();
+  } catch { /* user may deny */ }
+
+  // Build alert list from favorites + watchlist with known next air times
+  const pool = [];
+  const seen = new Set();
+  const add = (item) => {
+    if (!item?.mal_id) return;
+    const key = Number(item.mal_id);
+    if (seen.has(key)) return;
+    seen.add(key);
+    pool.push(item);
+  };
+  (state.favorites || []).forEach(add);
+  (state.watchlist || []).forEach(add);
+  // Also scan currently loaded schedule cards for next air times
+  (state.bootstrap?.today || []).forEach(add);
+  (state.bootstrap?.now || []).forEach(add);
+
+  const items = [];
+  let id = 1000;
+  for (const a of pool) {
+    const airAt = Number(a.next_airing_at);
+    if (!airAt || airAt * 1000 <= Date.now()) continue;
+    const media = (a.media || 'anime').toLowerCase();
+    const lead = api.leadMinutesForMedia
+      ? api.leadMinutesForMedia(media)
+      : (settings[`lead_${media}`] || settings.lead_default || 30);
+    const notifyAt = airAt * 1000 - lead * 60 * 1000;
+    if (notifyAt <= Date.now() + 20_000) continue;
+    const ep = a.next_episode ? `Ep ${a.next_episode}` : 'New release';
+    items.push({
+      id: id++,
+      title: 'Grey GodZilla · dropping soon',
+      body: `${titleOf(a)} · ${ep} in ~${lead} min (${media})`,
+      at: notifyAt,
+    });
+    if (items.length >= 40) break;
+  }
+
+  try {
+    await plugin.cancelAll?.();
+  } catch { /* */ }
+  if (!items.length) return { scheduled: 0 };
+
+  try {
+    const res = await plugin.scheduleMany({ items });
+    return { scheduled: res?.scheduled || items.length };
+  } catch (e) {
+    return { scheduled: 0, error: String(e?.message || e) };
+  }
+}
+
+async function renderSettings() {
+  const api = await waitForApi();
   const cfg = state.webhook.config || {};
   const st = state.webhook.status || {};
-  setSubheader('Get pinged on Discord or any webhook when a <strong>tracked</strong> show releases a new episode');
+  const notify = (await api?.get_notify_settings?.()) || {
+    enabled: true,
+    lead_anime: 30,
+    lead_manga: 60,
+    lead_manhwa: 60,
+    lead_webtoon: 60,
+    lead_manhua: 60,
+  };
+  setSubheader('<strong>Settings</strong> · alerts, webhooks, comfort');
 
   const watchHtml = state.watchlist.length
     ? state.watchlist.map((w) => `
@@ -750,76 +835,107 @@ function renderWebhooks() {
           <button type="button" class="track-btn tracked" data-untrack-id="${w.mal_id}">Remove</button>
         </div>
       `).join('')
-    : '<p class="webhook-hint">No shows tracked yet. Click <strong>+ Track</strong> on any anime to get episode alerts.</p>';
-
-  const logHtml = (st.log || []).slice().reverse().map((entry) => {
-    const msg = entry.anime || entry.message || entry.type || 'Event';
-    const time = entry.time ? new Date(entry.time).toLocaleString() : '';
-    return `<div class="webhook-log-item">${time} · ${escapeHtml(msg)}</div>`;
-  }).join('') || '<div class="webhook-log-item">No activity yet.</div>';
+    : '<p class="settings-hint">Track shows with <strong>+ Track</strong> to get drop alerts.</p>';
 
   showContent(`
-    <div class="webhook-panel">
-      <section class="webhook-card">
-        <h3>Webhook Settings</h3>
-        <p class="webhook-hint">Paste a Discord webhook URL or any HTTP endpoint. Works with Discord, Slack-compatible hooks, and custom servers.</p>
+    <div class="settings-panel">
+      <section class="settings-card">
+        <h3>Phone notifications (free)</h3>
+        <p class="settings-hint">Local alerts before a drop — no paid services. Uses Favorites + Tracked titles with a known air time from AniList.</p>
+        <label class="settings-toggle">
+          <input type="checkbox" id="notify-enabled" ${notify.enabled ? 'checked' : ''}>
+          Enable drop notifications
+        </label>
+        <div class="settings-row"><label>Anime</label>${leadSelect('lead-anime', notify.lead_anime)}</div>
+        <div class="settings-row"><label>Manga</label>${leadSelect('lead-manga', notify.lead_manga)}</div>
+        <div class="settings-row"><label>Manhwa</label>${leadSelect('lead-manhwa', notify.lead_manhwa)}</div>
+        <div class="settings-row"><label>Webtoon</label>${leadSelect('lead-webtoon', notify.lead_webtoon)}</div>
+        <div class="settings-row"><label>Manhua</label>${leadSelect('lead-manhua', notify.lead_manhua)}</div>
+        <div class="settings-actions">
+          <button type="button" class="webhook-btn" id="save-notify-btn">Save alert times</button>
+          <button type="button" class="webhook-btn secondary" id="sync-notify-btn">Refresh schedules</button>
+        </div>
+        <p class="settings-msg" id="notify-msg"></p>
+      </section>
+
+      <section class="settings-card">
+        <h3>Discord / webhook (optional)</h3>
+        <p class="settings-hint">Optional extra pings while the app is open.</p>
         <div class="webhook-field">
           <label for="webhook-url">Webhook URL</label>
           <input type="url" id="webhook-url" placeholder="https://discord.com/api/webhooks/..." value="${escapeHtml(cfg.url || '')}">
         </div>
         <div class="webhook-field">
-          <label for="webhook-poll">Check every (minutes)</label>
+          <label for="webhook-poll">Check every</label>
           <select id="webhook-poll">
             ${[15, 30, 45, 60].map((m) => `<option value="${m}" ${Number(cfg.poll_minutes) === m ? 'selected' : ''}>${m} min</option>`).join('')}
           </select>
         </div>
-        <label class="webhook-toggle">
+        <label class="settings-toggle">
           <input type="checkbox" id="webhook-enabled" ${cfg.enabled ? 'checked' : ''}>
-          Enable episode notifications
+          Enable webhook episode pings
         </label>
-        <div class="webhook-actions">
-          <button type="button" class="webhook-btn" id="save-webhook-btn">Save Settings</button>
-          <button type="button" class="webhook-btn secondary" id="test-webhook-btn">Send Test Ping</button>
-          <button type="button" class="webhook-btn secondary" id="check-webhook-btn">Check Now</button>
+        <div class="settings-actions">
+          <button type="button" class="webhook-btn" id="save-webhook-btn">Save webhook</button>
+          <button type="button" class="webhook-btn secondary" id="test-webhook-btn">Test ping</button>
         </div>
-        ${!st.enabled && st.url_set ? '<p class="webhook-hint" style="color:var(--warn)">Notifications are off — enable and Save to get automatic episode pings.</p>' : ''}
-        <p class="webhook-hint" id="webhook-save-msg"></p>
+        <p class="settings-msg" id="webhook-save-msg"></p>
       </section>
 
-      <section class="webhook-card">
-        <h3>Status</h3>
-        <div class="webhook-status-grid">
-          <div class="webhook-stat"><span>Enabled</span><strong>${st.enabled ? 'Yes' : 'No'}</strong></div>
-          <div class="webhook-stat"><span>Tracked shows</span><strong>${st.watchlist_count ?? 0}</strong></div>
-          <div class="webhook-stat"><span>Last check</span><strong>${st.last_check ? new Date(st.last_check).toLocaleString() : '—'}</strong></div>
-          <div class="webhook-stat"><span>Last ping</span><strong>${st.last_ping ? new Date(st.last_ping).toLocaleString() : '—'}</strong></div>
-        </div>
-        ${st.last_error ? `<p class="webhook-hint" style="color:var(--err)">Error: ${escapeHtml(st.last_error)}</p>` : ''}
-        <h3 style="margin-top:0.85rem">Recent Activity</h3>
-        <div class="webhook-log">${logHtml}</div>
-      </section>
-
-      <section class="webhook-card">
-        <h3>Add Shows to Track</h3>
-        <p class="webhook-hint">Search any anime or pick from the list below. Tracking is instant — no need to find shows on other tabs.</p>
-        <div class="picker-search-row">
-          <input type="search" id="picker-search" placeholder="Search anime by name..." autocomplete="off">
-          <button type="button" class="webhook-btn secondary" id="picker-search-btn">Search</button>
-        </div>
-        <div id="picker-results" class="picker-grid"></div>
-        <h3 style="margin-top:1rem">Browse Airing & Upcoming</h3>
-        <div id="picker-browse" class="picker-grid"></div>
-      </section>
-
-      <section class="webhook-card">
-        <h3>Tracked Shows</h3>
+      <section class="settings-card">
+        <h3>Tracked shows</h3>
         <div class="webhook-watchlist">${watchHtml}</div>
+      </section>
+
+      <section class="settings-card">
+        <h3>About</h3>
+        <p class="settings-hint">In-app name: <strong>Grey GodZilla Anime App</strong><br>
+        Launcher icon name: <strong>GGZ Anime</strong><br>
+        Version: <strong id="settings-version">v1.5.0</strong></p>
       </section>
     </div>
   `);
 
+  $('#save-notify-btn')?.addEventListener('click', async () => {
+    const msg = $('#notify-msg');
+    const payload = {
+      enabled: !!$('#notify-enabled')?.checked,
+      lead_anime: Number($('#lead-anime')?.value || 30),
+      lead_manga: Number($('#lead-manga')?.value || 60),
+      lead_manhwa: Number($('#lead-manhwa')?.value || 60),
+      lead_webtoon: Number($('#lead-webtoon')?.value || 60),
+      lead_manhua: Number($('#lead-manhua')?.value || 60),
+    };
+    const res = await api?.save_notify_settings?.(payload);
+    if (res?.ok) {
+      const sync = await syncLocalNotifications();
+      if (msg) {
+        msg.className = 'settings-msg ok';
+        msg.textContent = `Saved. ${sync.scheduled || 0} alert(s) scheduled.`;
+      }
+      showToast('Notification settings saved.');
+    } else if (msg) {
+      msg.className = 'settings-msg err';
+      msg.textContent = 'Could not save.';
+    }
+  });
+  $('#sync-notify-btn')?.addEventListener('click', async () => {
+    const sync = await syncLocalNotifications();
+    const msg = $('#notify-msg');
+    if (msg) {
+      msg.className = sync.error ? 'settings-msg err' : 'settings-msg ok';
+      msg.textContent = sync.error
+        ? `Sync failed: ${sync.error}`
+        : `Scheduled ${sync.scheduled || 0} upcoming alert(s).`;
+    }
+  });
+
   bindWebhookEvents();
-  loadPickerBrowse();
+}
+
+function renderWebhooks() {
+  // Webhooks live under Settings (calmer navigation)
+  return renderSettings();
 }
 
 function bindWebhookEvents() {
@@ -1111,7 +1227,8 @@ function render() {
     case 'favorites': renderFavorites(); break;
     case 'history': renderHistory(); break;
     case 'search': renderSearchResults(); break;
-    case 'webhooks': renderWebhooks(); break;
+    case 'settings': renderSettings(); break;
+    case 'webhooks': renderSettings(); break; // webhooks live under Settings
     default: renderDaily();
   }
 }
@@ -1674,34 +1791,37 @@ function exitStreamFullscreen() {
   const overlay = $('#stream-overlay');
   overlay?.classList.remove('is-fullscreen');
   document.body.classList.remove('stream-fullscreen');
+  const btn = $('#stream-fullscreen-btn');
+  if (btn) btn.textContent = '⛶ Full';
   if (document.fullscreenElement) {
     document.exitFullscreen?.().catch(() => {});
   }
 }
 
 async function toggleStreamFullscreen() {
-  const wrap = $('#stream-player-wrap') || $('#stream-panel') || $('#stream-overlay');
+  // Android WebView often blocks the Fullscreen API — CSS immersive mode always works.
   const overlay = $('#stream-overlay');
-  if (!wrap) return;
+  const panel = $('#stream-panel') || overlay;
+  if (!overlay) return;
 
+  const isFs = overlay.classList.contains('is-fullscreen') || document.body.classList.contains('stream-fullscreen');
+  if (isFs) {
+    exitStreamFullscreen();
+    return;
+  }
+
+  overlay.classList.add('is-fullscreen');
+  document.body.classList.add('stream-fullscreen');
+  const btn = $('#stream-fullscreen-btn');
+  if (btn) btn.textContent = '⛶ Exit';
+
+  // Best-effort native fullscreen on top of CSS mode
   try {
-    if (document.fullscreenElement) {
-      await document.exitFullscreen();
-      overlay?.classList.remove('is-fullscreen');
-      document.body.classList.remove('stream-fullscreen');
-      return;
-    }
-    if (wrap.requestFullscreen) {
-      await wrap.requestFullscreen();
-    } else if (wrap.webkitRequestFullscreen) {
-      await wrap.webkitRequestFullscreen();
-    } else {
-      overlay?.classList.toggle('is-fullscreen');
-      document.body.classList.toggle('stream-fullscreen');
-    }
+    const target = panel || overlay;
+    if (target.requestFullscreen) await target.requestFullscreen();
+    else if (target.webkitRequestFullscreen) await target.webkitRequestFullscreen();
   } catch {
-    overlay?.classList.toggle('is-fullscreen');
-    document.body.classList.toggle('stream-fullscreen');
+    /* CSS mode is enough */
   }
 }
 
@@ -1970,12 +2090,21 @@ async function loadAppInfo() {
     if (api?.get_app_info) {
       const info = await api.get_app_info();
       if (info?.version) {
-        $('#version-badge').textContent = `v${info.version}`;
+        const ver = `v${info.version}`;
+        const badge = $('#version-badge');
+        if (badge) badge.textContent = ver;
+        const footVer = $('#footer-version');
+        if (footVer) footVer.textContent = ver;
         const line = $('#app-version-line');
+        // Keep in-app branding as Grey GodZilla Anime App (launcher is GGZ Anime)
         if (line) {
-          line.innerHTML = `<strong>${escapeHtml(info.publisher || 'Grey GodZilla')}</strong> · ${escapeHtml(info.name || 'Anime Tracker')} v${escapeHtml(info.version)}`;
+          line.innerHTML = `<strong>Grey GodZilla Anime App</strong> · ${escapeHtml(ver)}`;
         }
-        if (info.title) document.title = info.title;
+        document.title = `Grey GodZilla Anime App ${ver}`;
+        const h1 = document.querySelector('.brand-text h1');
+        if (h1) h1.textContent = 'Grey GodZilla Anime App';
+        const aboutVer = $('#settings-version');
+        if (aboutVer) aboutVer.textContent = ver;
       }
     }
   } catch {
@@ -1986,9 +2115,13 @@ async function loadAppInfo() {
 function init() {
   loadAppInfo();
   loadWebhookData().then(() => {
-    $('#count-webhooks').textContent = state.watchlist.length;
+    const cw = $('#count-webhooks');
+    if (cw) cw.textContent = state.watchlist.length;
+    syncLocalNotifications().catch(() => {});
   });
-  loadLibrary();
+  loadLibrary().then(() => {
+    syncLocalNotifications().catch(() => {});
+  });
 
   $('#refresh-btn')?.addEventListener('click', () => forceRefreshAll());
 
