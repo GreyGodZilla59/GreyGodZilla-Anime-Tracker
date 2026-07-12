@@ -372,16 +372,40 @@ function cardHtml(a) {
   }
 }
 
+function trackFilterQuery() {
+  // Tracker must NOT use Anime/Read search text — that was hiding all of today's list
+  if (state.section === 'anime' || state.section === 'read') return '';
+  return '';
+}
+
 function renderDaily() {
-  const q = state.search.trim().toLowerCase();
-  const list = (state.bootstrap?.today || []).filter((a) => matchesSearch(a, q));
+  const raw = state.bootstrap?.today || [];
+  // Extra safety: only keep entries that actually air on local today
+  const todayKeyStr = new Date().toISOString().slice(0, 10);
+  const localKey = (() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  })();
+  const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(dayStart); dayEnd.setDate(dayEnd.getDate() + 1);
+  const list = raw.filter((a) => {
+    if (a.airing_local_date) return a.airing_local_date === localKey;
+    if (a.airing_at) {
+      const ms = Number(a.airing_at) * 1000;
+      return ms >= dayStart.getTime() && ms < dayEnd.getTime();
+    }
+    return true;
+  });
   const day = state.bootstrap?.today_name || getTodayDay();
 
-  setSubheader(`<strong>${DAY_LABELS[day] || day}</strong> · ${list.length} shows today`);
-  setText('#count-daily', state.bootstrap?.today?.length ?? '—');
+  setSubheader(`<strong>📅 Today · ${DAY_LABELS[day] || day}</strong> · ${list.length} episode drop${list.length === 1 ? '' : 's'}`);
+  setText('#count-daily', list.length || '—');
 
   if (!list.length) {
-    showEmpty(q ? 'No matches for your search today.' : 'Nothing scheduled for today in the database.');
+    const err = state.bootstrap?.error;
+    showEmpty(err
+      ? `Couldn’t load today’s schedule (${err}). Tap ↻ Refresh.`
+      : 'No episode drops scheduled for today (your local date). Tap ↻ to refresh.');
     return;
   }
   showContent(`<div class="detail-list">${list.map(detailRow).join('')}</div>`);
@@ -478,7 +502,6 @@ async function openAnimeHeavenExternal(anime, triggerEl = null) {
 
 function renderWeekly() {
   const schedule = state.weekly?.schedule || {};
-  const q = state.search.trim().toLowerCase();
   const today = state.bootstrap?.today_name || getTodayDay();
   const widths = getWeekColWidths();
   let total = 0;
@@ -490,7 +513,8 @@ function renderWeekly() {
     : '';
 
   const cols = DAYS.map((day, index) => {
-    const items = (schedule[day] || []).filter((a) => matchesSearch(a, q));
+    // Do not apply Anime/Read search text here
+    const items = schedule[day] || [];
     total += items.length;
     const body = items.length
       ? items.map((a) => {
@@ -551,7 +575,8 @@ function renderMonthly() {
     return;
   }
 
-  const q = state.search.trim().toLowerCase();
+  // Tracker views ignore Anime/Read search text
+  const q = '';
   const premieres = (m.premieres || []).filter((a) => matchesSearch(a, q));
   const ongoing = (m.ongoing || []).filter((a) => matchesSearch(a, q));
   const startingSoon = (m.starting_soon || []).filter((a) => matchesSearch(a, q));
@@ -653,7 +678,7 @@ function renderYearly() {
     return;
   }
 
-  const q = state.search.trim().toLowerCase();
+  const q = '';
   const premieres = (y.premieres || []).filter((a) => matchesSearch(a, q));
   const announced = (y.announced_tba || []).filter((a) => matchesSearch(a, q));
   const airing = (y.airing || []).filter((a) => matchesSearch(a, q));
@@ -753,15 +778,14 @@ function renderYearly() {
 }
 
 function renderSeason(which) {
-  const q = state.search.trim().toLowerCase();
-  const list = (state.bootstrap?.[which] || state.season[which] || []).filter((a) => matchesSearch(a, q));
-  setText(`#count-${which}`, list.length || state.bootstrap?.[which]?.length || '—');
+  const list = (state.bootstrap?.[which] || state.season[which] || []).filter(Boolean);
+  setText(`#count-${which}`, list.length || '—');
 
   const label = which === 'now' ? 'Current season' : 'Next season';
   setSubheader(`<strong>${label}</strong> · ${list.length} shows`);
 
   if (!list.length) {
-    showEmpty(q ? 'No matches.' : 'No anime in this list yet.');
+    showEmpty('No anime in this list yet. Tap ↻ Refresh.');
     return;
   }
   showContent(`<div class="grid">${list.map(cardHtml).join('')}</div>`);
@@ -935,7 +959,7 @@ async function renderSettings() {
         <h3>About</h3>
         <p class="settings-hint">In-app name: <strong>Grey GodZilla Anime App</strong><br>
         Launcher icon name: <strong>GGZ Anime</strong><br>
-        Version: <strong id="settings-version">v1.6.0</strong></p>
+        Version: <strong id="settings-version">v1.6.1</strong></p>
       </section>
     </div>
   `);
@@ -1183,26 +1207,24 @@ async function untrackAnime(malId) {
 }
 
 function renderFavorites() {
-  const q = state.search.trim().toLowerCase();
-  const list = (state.favorites || []).filter((a) => matchesSearch(a, q));
-  setSubheader(`Your <strong>favorites</strong> · ${list.length} saved · star any show to pin it here`);
-  setText('#count-favorites', state.favorites.length);
+  const list = state.favorites || [];
+  setSubheader(`Your <strong>favorites</strong> · ${list.length} saved`);
+  setText('#count-favorites', list.length);
   updateStats();
   if (!list.length) {
-    showEmpty(q ? 'No favorites match your filter.' : 'No favorites yet — hit ☆ Favorite on any show.');
+    showEmpty('No favorites yet — hit ☆ Favorite on any show.');
     return;
   }
   showContent(`<div class="detail-list">${list.map(detailRow).join('')}</div>`);
 }
 
 function renderHistory() {
-  const q = state.search.trim().toLowerCase();
-  const list = (state.history || []).filter((a) => matchesSearch(a, q));
-  setSubheader(`Watch <strong>history</strong> · ${list.length} completed · mark shows done as you finish them`);
-  setText('#count-history', state.history.length);
+  const list = state.history || [];
+  setSubheader(`Watch <strong>history</strong> · ${list.length} completed`);
+  setText('#count-history', list.length);
   updateStats();
   if (!list.length) {
-    showEmpty(q ? 'No history matches your filter.' : 'No completed titles yet — use Mark Done on any show.');
+    showEmpty('No completed titles yet — use Mark Done on any show.');
     return;
   }
   const rows = list.map((a) => {
@@ -1757,14 +1779,18 @@ function showDayPremiereDetail(day) {
   $('#back-to-month-btn')?.addEventListener('click', () => renderMonthly());
 }
 
-async function loadBootstrap() {
+async function loadBootstrap(force = false) {
   const api = await waitForApi();
   if (!api?.get_bootstrap) throw new Error('App API not available');
 
   setStatus('Loading today...', 'loading');
-  showLoading('Loading today\'s releases...');
+  if (state.section === 'track') {
+    showLoading('Loading today’s episode drops…');
+  }
 
-  const data = await api.get_bootstrap();
+  const data = force && api.get_bootstrap.length
+    ? await api.get_bootstrap(true)
+    : await api.get_bootstrap(force);
   state.bootstrap = data;
   state.loaded.add('daily');
   state.loaded.add('now');
@@ -1780,17 +1806,26 @@ async function loadBootstrap() {
 
   const hasAny = (data.now?.length || 0) + (data.today?.length || 0) + (data.upcoming?.length || 0);
   if (!hasAny && data.error) {
-    throw new Error(String(data.error));
+    // Still render empty states instead of hard-crashing the whole Track tab
+    setStatus('Partial', 'loading');
+    showToast(`Schedule load issue: ${data.error}`, 'err');
+  } else {
+    noteStale(data, 'Today');
+    if (!data.stale && !data.offline) setStatus('Ready', 'ready');
   }
 
-  noteStale(data, 'Today');
-  if (!data.stale && !data.offline) setStatus('Ready', 'ready');
+  // Always paint Track after bootstrap (even if empty)
+  if (state.section === 'track' || !state.section) {
+    state.section = 'track';
+    state.tab = state.trackTab || 'daily';
+  }
+  updateSectionChrome();
   render();
 
   // Stagger background loads so AniList is less likely to rate-limit on mobile data
-  setTimeout(() => loadWeeklyBackground(), 350);
-  setTimeout(() => loadMonthlyBackground(), 1200);
-  setTimeout(() => loadYearlyBackground(), 2200);
+  setTimeout(() => loadWeeklyBackground(force), 400);
+  setTimeout(() => loadMonthlyBackground(force), 1400);
+  setTimeout(() => loadYearlyBackground(true), 2400);
   startDailyRefreshWatcher();
 }
 
@@ -1802,7 +1837,9 @@ async function loadWeeklyBackground(force = false) {
 
   try {
     const api = await waitForApi();
-    const data = await api.get_weekly();
+    const data = api.get_weekly.length
+      ? await api.get_weekly(force)
+      : await api.get_weekly();
     const total = Object.values(data.schedule || {}).reduce((n, arr) => n + arr.length, 0);
     if (!total && data.error && !data.stale && !state.weekly) {
       throw new Error(String(data.error));
@@ -1885,35 +1922,40 @@ async function loadYearlyBackground(force = false) {
 
 async function forceRefreshAll() {
   const api = await waitForApi();
-  if (!api?.refresh_all_data) return;
-
   const btn = $('#refresh-btn');
   if (btn) {
     btn.disabled = true;
     btn.classList.add('spinning');
   }
   setStatus('Refreshing...', 'loading');
-  showToast('Pulling latest episode schedules...', '');
+  showToast('Refreshing schedules…', '');
   try {
-    const result = await api.refresh_all_data(true);
-    state.bootstrap = result.bootstrap || state.bootstrap;
-    state.weekly = result.weekly || null;
-    state.monthly = result.monthly || null;
-    state.yearly = null;
+    let result = null;
+    if (api?.refresh_all_data) {
+      result = await api.refresh_all_data(true);
+    }
+    if (result?.bootstrap) {
+      state.bootstrap = result.bootstrap;
+    } else {
+      await loadBootstrap(true);
+    }
+    state.weekly = result?.weekly || null;
+    state.monthly = result?.monthly || null;
+    state.yearly = result?.yearly || null;
     state.loaded.clear();
     state.loaded.add('daily');
     state.loaded.add('now');
     state.loaded.add('upcoming');
     if (state.weekly) state.loaded.add('weekly');
     if (state.monthly) state.loaded.add('monthly');
+    if (state.yearly) state.loaded.add('yearly');
     setText('#last-updated', `Updated: ${new Date().toLocaleString()}`);
-    state.refreshDate = result.today || null;
+    state.refreshDate = result?.today || null;
     updateStats();
-    // Fill anything not returned by the refresh call.
     await Promise.all([
-      state.weekly ? Promise.resolve() : loadWeeklyBackground(),
-      state.monthly ? Promise.resolve() : loadMonthlyBackground(),
-      loadYearlyBackground(true),
+      state.weekly ? Promise.resolve() : loadWeeklyBackground(true),
+      state.monthly ? Promise.resolve() : loadMonthlyBackground(true),
+      state.yearly ? Promise.resolve() : loadYearlyBackground(true),
     ]);
     setStatus('Ready', 'ready');
     const weekN = state.weekly
@@ -1925,6 +1967,9 @@ async function forceRefreshAll() {
       `Refreshed · ${state.bootstrap?.today?.length || 0} today · ${weekN} this week · ${monthN} this month`,
       'ok',
     );
+    state.section = 'track';
+    state.tab = state.trackTab || 'daily';
+    updateSectionChrome();
     render();
   } catch (err) {
     setStatus('Error', '');

@@ -6,13 +6,13 @@
   'use strict';
 
   const APP_NAME = 'Grey GodZilla Anime Tracker';
-  const APP_VERSION = '1.6.0';
+  const APP_VERSION = '1.6.1';
   const APP_PUBLISHER = 'Grey GodZilla';
   const ANILIST_URL = 'https://graphql.anilist.co';
   const AH_BASE = 'https://animeheaven.me';
   // Free public reading catalog (manga / manhwa / webtoons / novels)
   const MD_API = 'https://api.mangadex.org';
-  const MD_UA = 'GreyGodZillaAnimeApp/1.6.0 (free personal reader; github.com/GreyGodZilla59)';
+  const MD_UA = 'GreyGodZillaAnimeApp/1.6.1 (free personal reader; github.com/GreyGodZilla59)';
   const HTTP_TIMEOUT_MS = 25000;
   const GQL_MAX_ATTEMPTS = 4;
   const GQL_BASE_DELAY_MS = 450;
@@ -392,7 +392,28 @@ fragment MediaFields on Media {
   }
 
   // ---------- AniList data ----------
-  async function airingSchedule(fromTs, toTs, pages = 4) {
+  function localDayKey(date = new Date()) {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  function localDayBounds(date = new Date()) {
+    const dayStart = new Date(date);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(dayStart);
+    dayEnd.setDate(dayEnd.getDate() + 1);
+    return { dayStart, dayEnd, key: localDayKey(dayStart) };
+  }
+
+  function isAiringOnLocalDay(airingAtSec, dayStart, dayEnd) {
+    if (!airingAtSec) return false;
+    const ms = Number(airingAtSec) * 1000;
+    return ms >= dayStart.getTime() && ms < dayEnd.getTime();
+  }
+
+  async function airingSchedule(fromTs, toTs, pages = 6) {
     const query = MEDIA_FRAGMENT + `
       query ($from: Int, $to: Int, $page: Int) {
         Page(page: $page, perPage: 50) {
@@ -415,16 +436,26 @@ fragment MediaFields on Media {
         const media = row.media;
         if (!media || media.isAdult) continue;
         const slim = slimMedia(media);
+        if (!slim) continue;
         if (row.airingAt) {
           const dt = new Date(row.airingAt * 1000);
           slim.airing_at = row.airingAt;
           slim.next_episode = row.episode;
+          slim.next_airing_at = row.airingAt;
+          // Local device timezone — this is what "Today" means for the user
           slim.broadcast_day = dt.toLocaleDateString('en-US', { weekday: 'long' });
-          slim.broadcast_time = dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+          slim.broadcast_time = dt.toLocaleTimeString('en-US', {
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false,
+          });
+          slim.airing_local_date = localDayKey(dt);
         }
         results.push(slim);
       }
       if (!(payload.data && payload.data.Page && payload.data.Page.pageInfo && payload.data.Page.pageInfo.hasNextPage)) break;
+      // Soft pacing between pages so AniList is less likely to 429
+      if (page < pages) await sleep(120);
     }
     return { data: results, error };
   }
@@ -677,66 +708,90 @@ fragment MediaFields on Media {
       return s.lead_default;
     },
 
-    async get_bootstrap() {
-      const cached = cacheGet('bootstrap');
-      if (cached) return cached;
+    async get_bootstrap(force = false) {
+      const { dayStart, dayEnd, key: dayKey } = localDayBounds(new Date());
+      const cacheKey = `bootstrap:${dayKey}`;
+      if (!force) {
+        const cached = cacheGet(cacheKey);
+        // Only reuse cache if it actually has today's list (or a real error snapshot)
+        if (cached && Array.isArray(cached.today) && (cached.today.length || cached.error)) {
+          return cached;
+        }
+      }
       try {
         const now = new Date();
-        const dayStart = new Date(now);
-        dayStart.setHours(0, 0, 0, 0);
-        const dayEnd = new Date(dayStart);
-        dayEnd.setDate(dayEnd.getDate() + 1);
         const season = SEASON_BY_MONTH[now.getMonth() + 1];
         const next = NEXT_SEASON[season];
         const nextYear = season === 'FALL' ? now.getFullYear() + 1 : now.getFullYear();
 
-        const [todayPayload, nowPayload, upPayload] = await Promise.all([
-          airingSchedule(Math.floor(dayStart.getTime() / 1000) - 3600, Math.floor(dayEnd.getTime() / 1000) + 3600, 3),
+        // Pull a wider AniList window, then STRICT-filter to local calendar day.
+        // This stops "week junk" and yesterday/tomorrow bleed from showing under Today.
+        const fromTs = Math.floor(dayStart.getTime() / 1000) - 6 * 3600;
+        const toTs = Math.floor(dayEnd.getTime() / 1000) + 6 * 3600;
+
+        // Fetch today airings first (most important), then season lists
+        const todayPayload = await airingSchedule(fromTs, toTs, 8);
+        const [nowPayload, upPayload] = await Promise.all([
           collectSeason(season, now.getFullYear(), 2),
           collectSeason(next, nextYear, 1),
         ]);
 
         const seen = new Map();
         for (const item of todayPayload.data || []) {
-          const key = item.mal_id || item.anilist_id;
+          if (!isAiringOnLocalDay(item.airing_at, dayStart, dayEnd)) continue;
+          const key = `${item.mal_id || item.anilist_id}:${item.next_episode || ''}`;
           if (!seen.has(key)) seen.set(key, item);
         }
         const today = [...seen.values()].sort((a, b) =>
-          String(a.broadcast_time || '99').localeCompare(String(b.broadcast_time || '99')),
+          (a.airing_at || 0) - (b.airing_at || 0)
+          || String(a.broadcast_time || '99').localeCompare(String(b.broadcast_time || '99')),
         );
+
         const result = {
-          now: nowPayload.data || [],
-          upcoming: upPayload.data || [],
+          now: (nowPayload.data || []).filter(Boolean),
+          upcoming: (upPayload.data || []).filter(Boolean),
           today,
           today_name: DAYS[now.getDay() === 0 ? 6 : now.getDay() - 1],
-          error: todayPayload.error || nowPayload.error || upPayload.error,
+          today_key: dayKey,
+          day_start: dayStart.toISOString(),
+          day_end: dayEnd.toISOString(),
+          error: todayPayload.error || nowPayload.error || upPayload.error || null,
           source: 'anilist',
+          last_refreshed: new Date().toISOString(),
         };
-        const hasData = today.length || (result.now && result.now.length) || (result.upcoming && result.upcoming.length);
+        const hasData = today.length || result.now.length || result.upcoming.length;
         if (!hasData && result.error) {
-          return withStaleFallback('bootstrap', result, result.error);
+          return withStaleFallback(cacheKey, result, result.error);
         }
+        cacheSet(cacheKey, result);
+        // Also keep a short alias for older callers
         cacheSet('bootstrap', result);
         return result;
       } catch (err) {
-        return withStaleFallback('bootstrap', {
-          now: [], upcoming: [], today: [], today_name: '', error: String(err.message || err), source: 'anilist',
+        return withStaleFallback(cacheKey, {
+          now: [], upcoming: [], today: [], today_name: '', today_key: dayKey,
+          error: String(err.message || err), source: 'anilist',
         }, String(err.message || err));
       }
     },
 
-    async get_weekly() {
-      const cached = cacheGet('weekly');
-      if (cached) return cached;
+    async get_weekly(force = false) {
+      const now = new Date();
+      const start = new Date(now);
+      const day = (start.getDay() + 6) % 7; // mon=0
+      start.setDate(start.getDate() - day);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(start);
+      end.setDate(end.getDate() + 7);
+      const weekKey = `weekly:${localDayKey(start)}`;
+      if (!force) {
+        const cached = cacheGet(weekKey) || cacheGet('weekly');
+        if (cached && cached.schedule && cached.week_start === localDayKey(start)) {
+          return cached;
+        }
+      }
       try {
-        const now = new Date();
-        const start = new Date(now);
-        const day = (start.getDay() + 6) % 7; // mon=0
-        start.setDate(start.getDate() - day);
-        start.setHours(0, 0, 0, 0);
-        const end = new Date(start);
-        end.setDate(end.getDate() + 7);
-        const payload = await airingRange(start.getTime(), end.getTime(), 4, 6);
+        const payload = await airingRange(start.getTime(), end.getTime(), 3, 6);
         const schedule = Object.fromEntries(DAYS.map((d) => [d, []]));
         const seen = Object.fromEntries(DAYS.map((d) => [d, new Set()]));
         for (const item of payload.data || []) {
@@ -751,28 +806,31 @@ fragment MediaFields on Media {
             ...item,
             broadcast_day: dt.toLocaleDateString('en-US', { weekday: 'long' }),
             broadcast_time: dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false }),
+            airing_local_date: localDayKey(dt),
           });
         }
         for (const d of DAYS) {
-          schedule[d].sort((a, b) => String(a.broadcast_time || '').localeCompare(String(b.broadcast_time || '')));
+          schedule[d].sort((a, b) => (a.airing_at || 0) - (b.airing_at || 0)
+            || String(a.broadcast_time || '').localeCompare(String(b.broadcast_time || '')));
         }
         const total = DAYS.reduce((n, d) => n + schedule[d].length, 0);
         const result = {
           schedule,
-          week_start: start.toISOString().slice(0, 10),
-          week_end: new Date(end.getTime() - 1000).toISOString().slice(0, 10),
+          week_start: localDayKey(start),
+          week_end: localDayKey(new Date(end.getTime() - 1000)),
           total,
           error: payload.error,
           source: 'anilist',
           last_refreshed: new Date().toISOString(),
         };
         if (!total && payload.error) {
-          return withStaleFallback('weekly', result, payload.error);
+          return withStaleFallback(weekKey, result, payload.error);
         }
+        cacheSet(weekKey, result);
         cacheSet('weekly', result);
         return result;
       } catch (err) {
-        return withStaleFallback('weekly', {
+        return withStaleFallback(weekKey, {
           schedule: Object.fromEntries(DAYS.map((d) => [d, []])),
           total: 0,
           error: String(err.message || err),
@@ -1956,10 +2014,11 @@ fragment MediaFields on Media {
     async refresh_all_data() {
       cacheClearSchedule();
       saveJSON('gg_refresh_meta', { last_date: todayKey(), last_time: new Date().toISOString() });
-      const bootstrap = await this.get_bootstrap();
-      const weekly = await this.get_weekly();
+      const bootstrap = await this.get_bootstrap(true);
+      const weekly = await this.get_weekly(true);
       const now = new Date();
       const monthly = await this.get_monthly(now.getFullYear(), now.getMonth() + 1);
+      const yearly = await this.get_yearly(now.getFullYear());
       return {
         ok: true,
         today: todayKey(),
@@ -1967,6 +2026,7 @@ fragment MediaFields on Media {
         bootstrap,
         weekly,
         monthly,
+        yearly,
         source: 'anilist',
       };
     },
