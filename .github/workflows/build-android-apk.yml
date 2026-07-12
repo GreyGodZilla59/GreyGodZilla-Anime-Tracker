@@ -47,13 +47,15 @@ jobs:
       - name: Rename APK
         run: |
           mkdir -p dist
+          VER=$(node -p "require('./package.json').version")
           cp android/app/build/outputs/apk/debug/app-debug.apk \
-            "dist/GGZ Anime v1.5.0-android.apk"
+            "dist/GGZ Anime v${VER}-android.apk"
+          echo "VER=${VER}" >> "$GITHUB_ENV"
           ls -lh dist/
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GGZ-Anime-v1.5.0-android
-          path: mobile/dist/GGZ Anime v1.5.0-android.apk
+          name: GGZ-Anime-android
+          path: mobile/dist/*.apk
           if-no-files-found: error
