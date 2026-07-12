@@ -6,13 +6,13 @@
   'use strict';
 
   const APP_NAME = 'Grey GodZilla Anime Tracker';
-  const APP_VERSION = '1.5.4';
+  const APP_VERSION = '1.6.0';
   const APP_PUBLISHER = 'Grey GodZilla';
   const ANILIST_URL = 'https://graphql.anilist.co';
   const AH_BASE = 'https://animeheaven.me';
   // Free public reading catalog (manga / manhwa / webtoons / novels)
   const MD_API = 'https://api.mangadex.org';
-  const MD_UA = 'GreyGodZillaAnimeApp/1.5.4 (free personal reader; github.com/GreyGodZilla59)';
+  const MD_UA = 'GreyGodZillaAnimeApp/1.6.0 (free personal reader; github.com/GreyGodZilla59)';
   const HTTP_TIMEOUT_MS = 25000;
   const GQL_MAX_ATTEMPTS = 4;
   const GQL_BASE_DELAY_MS = 450;

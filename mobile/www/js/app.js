@@ -9,6 +9,8 @@ const CURRENT_YEAR = new Date().getFullYear();
 const DAILY_REFRESH_CHECK_MS = 30 * 60 * 1000;
 
 const state = {
+  section: 'track', // track | anime | read | saved | settings
+  trackTab: 'daily',
   tab: 'daily',
   search: '',
   bootstrap: null,
@@ -34,6 +36,7 @@ const state = {
     order_by: 'popularity',
     min_score: 0,
   },
+  readMedia: 'all_print', // all_print | manga | manhwa | webtoon | manhua | novel
   stream: {
     open: false,
     anime: null,
@@ -932,7 +935,7 @@ async function renderSettings() {
         <h3>About</h3>
         <p class="settings-hint">In-app name: <strong>Grey GodZilla Anime App</strong><br>
         Launcher icon name: <strong>GGZ Anime</strong><br>
-        Version: <strong id="settings-version">v1.5.4</strong></p>
+        Version: <strong id="settings-version">v1.6.0</strong></p>
       </section>
     </div>
   `);
@@ -1218,69 +1221,185 @@ function renderHistory() {
 
 function renderSearchResults() {
   const q = state.search.trim();
-  const media = state.filters.media || 'all';
+  const isRead = state.section === 'read';
+  const media = state.filters.media || (isRead ? 'manga' : 'anime');
   if (state.searchLoading) {
-    const label = media === 'all' ? 'anime, manga, webtoons & novels' : media;
-    showLoading(`Searching ${label} for “${q}”…`);
+    showLoading(isRead
+      ? `Looking up reading material for “${q}”…`
+      : `Looking up anime for “${q}”…`);
     return;
   }
-  const list = (state.searchResults || []).filter(Boolean);
-  const src = state.searchSource ? ` · ${escapeHtml(state.searchSource)}` : '';
-  const counts = {};
-  for (const item of list) {
-    const k = item.media || 'other';
-    counts[k] = (counts[k] || 0) + 1;
+  let list = (state.searchResults || []).filter(Boolean);
+  // Keep anime tab = anime only, read tab = print only
+  if (state.section === 'anime') {
+    list = list.filter((i) => !isPrintMedia(i));
+  } else if (state.section === 'read') {
+    list = list.filter((i) => isPrintMedia(i));
   }
-  const breakdown = Object.keys(counts).length
-    ? Object.entries(counts).map(([k, n]) => `${n} ${k}`).join(' · ')
-    : '';
+
   setSubheader(
-    `<strong>Search</strong> · ${escapeHtml(media === 'all' ? 'All media' : media)} · “${escapeHtml(q)}” · ${list.length} results`
-    + (breakdown ? ` <span class="muted">(${escapeHtml(breakdown)})</span>` : '')
-    + src,
+    isRead
+      ? `<strong>📖 Reading</strong> · “${escapeHtml(q)}” · ${list.length} book(s)`
+      : `<strong>🎬 Anime</strong> · “${escapeHtml(q)}” · ${list.length} show(s)`,
   );
   setText('#count-search', list.length || '—');
+
   if (!q || q.length < 2) {
-    showEmpty('Type at least 2 characters. Leave media on “All media” for anime + manga + webtoons + novels.');
+    showEmpty(isRead
+      ? 'Type a title above, pick Manga / Manhwa / Webtoon / Novel, then tap Search.'
+      : 'Type an anime name above, then tap Search.');
     return;
   }
   if (!list.length) {
     if (state.searchError) {
-      showEmpty(`Search could not finish (${state.searchError}). Tap Go to retry — try “All media” with Any format.`);
+      showEmpty(`Search failed. Tap Search again.\n(${state.searchError})`);
       return;
     }
-    showEmpty(`No matches for “${q}”. Try All media, clear format/status, or a shorter title.`);
+    showEmpty(isRead
+      ? `No reading results for “${q}”. Try “All” or a shorter name.`
+      : `No anime found for “${q}”. Check the spelling and try again.`);
     return;
   }
   showContent(`<div class="grid">${list.map(cardHtml).join('')}</div>`);
 }
 
+function updateSectionChrome() {
+  const hints = {
+    track: 'Track what’s airing',
+    anime: 'Search & watch anime',
+    read: 'Search & read books',
+    saved: 'Favorites & finished',
+    settings: 'Alerts & settings',
+  };
+  setText('#section-hint', hints[state.section] || 'Grey GodZilla');
+  document.body.classList.remove('section-track', 'section-anime', 'section-read', 'section-saved', 'section-settings');
+  document.body.classList.add(`section-${state.section}`);
+
+  document.querySelectorAll('#bottom-nav .nav-item').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.section === state.section);
+  });
+  document.querySelectorAll('.section-panel').forEach((panel) => {
+    const match = panel.dataset.section === state.section;
+    panel.hidden = !match;
+    panel.classList.toggle('active', match);
+  });
+
+  // Track chips
+  document.querySelectorAll('#track-chips .chip').forEach((c) => {
+    c.classList.toggle('active', c.dataset.tab === state.trackTab);
+  });
+  // Saved chips
+  document.querySelectorAll('#saved-chips .chip').forEach((c) => {
+    c.classList.toggle('active', c.dataset.tab === state.tab);
+  });
+  // Read media chips
+  document.querySelectorAll('#read-media-chips .chip').forEach((c) => {
+    c.classList.toggle('active', c.dataset.readMedia === state.readMedia);
+  });
+  // Anime order chips
+  document.querySelectorAll('#anime-sort-chips .chip').forEach((c) => {
+    c.classList.toggle('active', c.dataset.animeOrder === state.filters.order_by);
+  });
+
+  // Sync legacy tab buttons for any code that still looks at .tab.active
+  document.querySelectorAll('.legacy-hidden .tab').forEach((t) => {
+    t.classList.toggle('active', t.dataset.tab === state.tab);
+  });
+}
+
+function setSection(section) {
+  const next = String(section || 'track');
+  state.section = next;
+
+  if (next === 'track') {
+    state.tab = state.trackTab || 'daily';
+  } else if (next === 'anime') {
+    state.tab = 'search';
+    state.filters.media = 'anime';
+    state.filters.type = 'any';
+    state.filters.status = 'any';
+    const animeInput = $('#search-anime');
+    if (animeInput && state.search) animeInput.value = state.search;
+    // Show last anime results or empty prompt
+  } else if (next === 'read') {
+    state.tab = 'search';
+    applyReadMediaFilter(state.readMedia || 'all_print');
+    const readInput = $('#search-read');
+    if (readInput && state.search) readInput.value = state.search;
+  } else if (next === 'saved') {
+    if (state.tab !== 'favorites' && state.tab !== 'history') state.tab = 'favorites';
+  } else if (next === 'settings') {
+    state.tab = 'settings';
+  }
+
+  // Keep hidden filter controls in sync
+  const fm = $('#filter-media');
+  if (fm) fm.value = state.filters.media;
+  const fo = $('#filter-order');
+  if (fo) fo.value = state.filters.order_by;
+
+  updateSectionChrome();
+  render();
+  // Lazy-load tracker data when opening track views
+  if (next === 'track') ensureTabData(state.tab).then(() => render()).catch(() => {});
+}
+
+function applyReadMediaFilter(readMedia) {
+  state.readMedia = readMedia || 'all_print';
+  // all_print uses manga umbrella (API returns manga+manhwa+novels); we strip anime client-side
+  if (state.readMedia === 'all_print') state.filters.media = 'manga';
+  else state.filters.media = state.readMedia;
+  state.filters.type = 'any';
+  state.filters.status = 'any';
+  const fm = $('#filter-media');
+  if (fm) fm.value = state.filters.media;
+}
+
 function render() {
-  if (state.loading.has(state.tab) && !state.loaded.has(state.tab)) {
+  if (state.loading.has(state.tab) && !state.loaded.has(state.tab) && state.section === 'track') {
     return;
   }
 
+  // Settings always available
+  if (state.section === 'settings' || state.tab === 'settings' || state.tab === 'webhooks') {
+    setSubheader('<strong>⚙️ More</strong> · Alerts & app info');
+    renderSettings();
+    return;
+  }
+
+  if (state.section === 'anime' || state.section === 'read') {
+    // Force search tab content
+    state.tab = 'search';
+    renderSearchResults();
+    return;
+  }
+
+  if (state.section === 'saved') {
+    if (state.tab === 'history') renderHistory();
+    else renderFavorites();
+    return;
+  }
+
+  // Tracker section
   switch (state.tab) {
     case 'daily': renderDaily(); break;
     case 'weekly':
       if (state.weekly) renderWeekly();
-      else showLoading('Loading weekly schedule...');
+      else showLoading('Loading this week…');
       break;
     case 'monthly':
       if (state.monthly) renderMonthly();
-      else showLoading('Loading monthly calendar...');
+      else showLoading('Loading this month…');
       break;
     case 'yearly':
       if (state.yearly) renderYearly();
-      else showLoading(`Loading ${state.yearlyYear} releases...`);
+      else showLoading(`Loading ${state.yearlyYear}…`);
       break;
     case 'now': renderSeason('now'); break;
     case 'upcoming': renderSeason('upcoming'); break;
     case 'favorites': renderFavorites(); break;
     case 'history': renderHistory(); break;
     case 'search': renderSearchResults(); break;
-    case 'settings': renderSettings(); break;
-    case 'webhooks': renderSettings(); break; // webhooks live under Settings
     default: renderDaily();
   }
 }
@@ -1452,112 +1571,122 @@ async function callSearchApi(api, q, media, opts) {
 }
 
 async function runDatabaseSearch(forceTab = true) {
-  const q = ($('#search')?.value || state.search || '').trim();
+  // Prefer the visible search box for the active section
+  let q = state.search || '';
+  if (state.section === 'anime') q = ($('#search-anime')?.value || q).trim();
+  else if (state.section === 'read') q = ($('#search-read')?.value || q).trim();
+  else q = ($('#search')?.value || q).trim();
   state.search = q;
-  const filters = readSearchFilters();
-  // Default media to all so non-anime is never accidentally skipped
-  if (!filters.media || filters.media === 'any') filters.media = 'all';
+  const hidden = $('#search');
+  if (hidden) hidden.value = q;
+
+  // Lock filters to the current section so users can't mix modes by accident
+  if (state.section === 'anime') {
+    state.filters.media = 'anime';
+    state.filters.type = 'any';
+    state.filters.status = 'any';
+  } else if (state.section === 'read') {
+    applyReadMediaFilter(state.readMedia || 'all_print');
+  }
+
+  const filters = { ...state.filters, ...readSearchFilters(), media: state.filters.media };
+  // Section overrides win
+  if (state.section === 'anime') filters.media = 'anime';
+  if (state.section === 'read') {
+    applyReadMediaFilter(state.readMedia || 'all_print');
+    filters.media = state.filters.media;
+  }
   state.filters = filters;
+  const fm = $('#filter-media');
+  if (fm) fm.value = filters.media;
 
   if (q.length < 2) {
     state.searchResults = [];
     state.searchError = null;
-    if (forceTab) setTab('search');
-    else if (state.tab === 'search') renderSearchResults();
+    if (forceTab) {
+      state.tab = 'search';
+      updateSectionChrome();
+    }
+    renderSearchResults();
     return;
   }
 
   const api = await waitForApi();
   if (!api) {
-    showToast('App bridge not ready — restart the app.', 'err');
+    showToast('App not ready — close and reopen.', 'err');
     return;
   }
   if (!api.search_media && !api.search_anime && !api.search) {
-    showToast('Search API not available in this build.', 'err');
+    showToast('Search not available in this build.', 'err');
     return;
   }
 
   const requestId = (state.searchRequestId = (state.searchRequestId || 0) + 1);
   state.searchLoading = true;
   state.searchError = null;
-  if (forceTab) {
-    state.tab = 'search';
-    document.querySelectorAll('.tab').forEach((t) => {
-      t.classList.toggle('active', t.dataset.tab === 'search');
-    });
-  }
-  if (state.tab === 'search') renderSearchResults();
+  state.tab = 'search';
+  updateSectionChrome();
+  renderSearchResults();
   setStatus('Searching...', 'loading');
 
   try {
-    // Never pass anime-only formats into print-media searches
-    let typeParam = filters.type === 'any' ? '' : (filters.type || '');
-    const animeFormats = new Set(['tv', 'movie', 'ova', 'ona', 'special']);
-    const printFormats = new Set(['manga', 'manhwa', 'manhua', 'webtoon', 'novel', 'one_shot', 'lightnovel', 'oneshot']);
-    if (filters.media === 'anime' && typeParam && !animeFormats.has(typeParam)) typeParam = '';
-    if (filters.media !== 'anime' && filters.media !== 'all' && typeParam && animeFormats.has(typeParam)) typeParam = '';
-    if (filters.media === 'all' && typeParam && !animeFormats.has(typeParam) && !printFormats.has(typeParam)) typeParam = '';
-
     const opts = {
       limit: 36,
-      type: typeParam,
-      status: filters.status === 'any' ? '' : (filters.status || ''),
+      type: '',
+      status: '',
       order_by: filters.order_by || 'popularity',
       sort: sortForOrder(filters.order_by),
-      min_score: filters.min_score || 0,
+      min_score: 0,
     };
 
-    let result = await callSearchApi(api, q, filters.media, opts);
+    let mediaKey = filters.media || 'anime';
+    // "all print" → broad search then strip anime
+    const wantAllPrint = state.section === 'read' && (state.readMedia === 'all_print');
+    if (wantAllPrint) mediaKey = 'all';
 
-    // Retry loose if empty
+    let result = await callSearchApi(api, q, mediaKey, opts);
     if (!result?.data?.length) {
-      result = await callSearchApi(api, q, filters.media, {
-        ...opts, type: '', status: '', min_score: 0,
-      }) || result;
+      result = await callSearchApi(api, q, mediaKey, { ...opts, order_by: 'score' }) || result;
     }
-
-    // If a single non-anime family failed, try broader manga bucket then all
-    if (!result?.data?.length && filters.media !== 'all' && filters.media !== 'anime') {
-      const mangaPass = await callSearchApi(api, q, 'manga', { ...opts, type: '', status: '', min_score: 0 });
+    if (!result?.data?.length && state.section === 'read' && mediaKey !== 'manga') {
+      const mangaPass = await callSearchApi(api, q, 'manga', opts);
       if (mangaPass?.data?.length) result = mangaPass;
-      else {
-        const allPass = await callSearchApi(api, q, 'all', { ...opts, type: '', status: '', min_score: 0 });
-        if (allPass?.data?.length) result = allPass;
-      }
+    }
+    if (!result?.data?.length && state.section === 'anime') {
+      result = await callSearchApi(api, q, 'anime', opts) || result;
     }
 
     if (requestId !== state.searchRequestId) return;
 
-    state.searchResults = (result?.data || []).filter(Boolean);
-    state.searchError = state.searchResults.length ? null : (result?.error || null);
+    let rows = (result?.data || []).filter(Boolean);
+    if (state.section === 'anime') rows = rows.filter((i) => !isPrintMedia(i));
+    if (state.section === 'read') rows = rows.filter((i) => isPrintMedia(i));
+
+    state.searchResults = rows;
+    state.searchError = rows.length ? null : (result?.error || null);
     state.searchSource = result?.source || '';
     state.searchLoading = false;
-    if (state.searchError && !state.searchResults.length) {
+    if (state.searchError && !rows.length) {
       setStatus('Search error', '');
-      showToast('Search unavailable — tap Go to retry.', 'err');
+      showToast('Search failed — tap Search again.', 'err');
     } else {
       setStatus('Ready', 'ready');
-      if (!state.searchResults.length) {
-        showToast(`No results for “${q}”.`, '');
-      } else {
-        const kinds = {};
-        state.searchResults.forEach((i) => { kinds[i.media || 'other'] = true; });
-        showToast(`${state.searchResults.length} result(s) · ${Object.keys(kinds).join(', ')}`, 'ok');
-      }
+      if (!rows.length) showToast(`Nothing found for “${q}”.`, '');
+      else showToast(`Found ${rows.length}`, 'ok');
     }
-    if (state.tab === 'search') renderSearchResults();
+    renderSearchResults();
   } catch (err) {
     if (requestId !== state.searchRequestId) return;
     state.searchLoading = false;
     const raw = err?.message || String(err);
     const friendly = /textContent|null|undefined/i.test(raw)
-      ? 'Search hit a UI glitch — tap Go to retry.'
+      ? 'Search glitch — tap Search again.'
       : raw;
     state.searchError = friendly;
     state.searchResults = [];
     setStatus('Error', '');
     showToast(friendly, 'err');
-    if (state.tab === 'search') renderSearchResults();
+    renderSearchResults();
   }
 }
 
@@ -1857,9 +1986,22 @@ async function ensureTabData(tab) {
 
 function setTab(tab) {
   state.tab = tab;
+  if (['daily', 'weekly', 'monthly', 'now', 'upcoming', 'yearly'].includes(tab)) {
+    state.trackTab = tab;
+    state.section = 'track';
+  } else if (tab === 'favorites' || tab === 'history') {
+    state.section = 'saved';
+  } else if (tab === 'search') {
+    // keep current anime/read section
+    if (state.section !== 'anime' && state.section !== 'read') state.section = 'anime';
+  } else if (tab === 'settings' || tab === 'webhooks') {
+    state.section = 'settings';
+  }
+
   document.querySelectorAll('.tab').forEach((t) => {
     t.classList.toggle('active', t.dataset.tab === tab);
   });
+  updateSectionChrome();
 
   ensureTabData(tab)
     .then(() => render())
@@ -2692,19 +2834,83 @@ function init() {
     }
   });
 
+  // Bottom navigation — main app modes
+  document.querySelectorAll('#bottom-nav .nav-item').forEach((btn) => {
+    btn.addEventListener('click', () => setSection(btn.dataset.section));
+  });
+
+  // Tracker chips
+  document.querySelectorAll('#track-chips .chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      state.section = 'track';
+      setTab(chip.dataset.tab);
+    });
+  });
+
+  // Saved chips
+  document.querySelectorAll('#saved-chips .chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      state.section = 'saved';
+      setTab(chip.dataset.tab);
+    });
+  });
+
+  // Reading type chips
+  document.querySelectorAll('#read-media-chips .chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      applyReadMediaFilter(chip.dataset.readMedia);
+      updateSectionChrome();
+      if ((state.search || '').trim().length >= 2 && state.section === 'read') {
+        runDatabaseSearch(false);
+      }
+    });
+  });
+
+  // Anime sort chips
+  document.querySelectorAll('#anime-sort-chips .chip').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      state.filters.order_by = chip.dataset.animeOrder || 'popularity';
+      const fo = $('#filter-order');
+      if (fo) fo.value = state.filters.order_by;
+      updateSectionChrome();
+      if ((state.search || '').trim().length >= 2 && state.section === 'anime') {
+        runDatabaseSearch(false);
+      }
+    });
+  });
+
+  // Legacy tab buttons (hidden) still work
   document.querySelectorAll('.tab').forEach((tab) => {
     tab.addEventListener('click', () => setTab(tab.dataset.tab));
   });
 
-  $('#search').addEventListener('input', (e) => {
+  // Anime search box
+  const bindSearchBox = (inputSel, goSel) => {
+    const input = $(inputSel);
+    const go = $(goSel);
+    input?.addEventListener('input', (e) => {
+      state.search = e.target.value;
+      const hidden = $('#search');
+      if (hidden) hidden.value = state.search;
+    });
+    input?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        runDatabaseSearch(true);
+      }
+    });
+    go?.addEventListener('click', () => runDatabaseSearch(true));
+  };
+  bindSearchBox('#search-anime', '#search-anime-go');
+  bindSearchBox('#search-read', '#search-read-go');
+
+  // Hidden legacy search (kept for desktop/compat)
+  $('#search')?.addEventListener('input', (e) => {
     state.search = e.target.value;
-    if (state.tab === 'search') {
-      scheduleDatabaseSearch();
-    } else {
-      render();
-    }
+    if (state.tab === 'search') scheduleDatabaseSearch();
+    else if (state.section === 'track') render();
   });
-  $('#search').addEventListener('keydown', (e) => {
+  $('#search')?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
       runDatabaseSearch(true);
@@ -2712,21 +2918,6 @@ function init() {
   });
   $('#search-go-btn')?.addEventListener('click', () => runDatabaseSearch(true));
   syncFormatFilterOptions();
-  $('#filter-media')?.addEventListener('change', () => {
-    syncFormatFilterOptions();
-    readSearchFilters();
-    if (state.tab === 'search' && state.search.trim().length >= 2) {
-      runDatabaseSearch(false);
-    }
-  });
-  ['filter-type', 'filter-status', 'filter-order', 'filter-score'].forEach((id) => {
-    $(`#${id}`)?.addEventListener('change', () => {
-      readSearchFilters();
-      if (state.tab === 'search' && state.search.trim().length >= 2) {
-        runDatabaseSearch(false);
-      }
-    });
-  });
 
   // Keyboard activation for year-month cards and calendar days.
   document.body.addEventListener('keydown', (e) => {
@@ -2754,6 +2945,8 @@ function init() {
     loadBootstrap().catch((err) => showError(err.message));
   });
 
+  // Start on Tracker with a clear chrome state
+  updateSectionChrome();
   loadBootstrap().catch((err) => showError(err.message));
 }
 

@@ -10,96 +10,122 @@
   <link rel="stylesheet" href="css/style.css">
   <link rel="stylesheet" href="css/mobile.css">
 </head>
-<body class="app-shell is-mobile">
+<body class="app-shell is-mobile section-track">
   <div class="bg-glow"></div>
 
-  <header class="header">
+  <!-- Simple top bar -->
+  <header class="header simple-header">
     <div class="header-accent"></div>
-    <div class="header-inner">
+    <div class="header-inner simple-header-inner">
       <div class="brand">
         <img class="brand-logo" src="assets/greygodzilla_logo.png" alt="Grey GodZilla">
         <div class="brand-text">
           <div class="brand-row">
             <h1>Grey GodZilla Anime App</h1>
-            <span class="version-badge" id="version-badge">v1.5.4</span>
+            <span class="version-badge" id="version-badge">v1.6.0</span>
           </div>
-          <p class="brand-sub">Track · Stream · Alerts</p>
+          <p class="brand-sub" id="section-hint">Track what’s airing</p>
         </div>
       </div>
-      <div class="header-actions">
+      <div class="header-actions simple-actions">
         <button type="button" class="refresh-btn" id="refresh-btn" title="Refresh">↻</button>
         <div class="status-pill" id="status-pill">
           <span class="status-dot"></span>
           <span id="status-text">Starting</span>
         </div>
-        <div class="search-cluster">
-          <div class="search-box">
-            <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
-            </svg>
-            <input type="search" id="search" placeholder="Anime, manga, webtoons, novels…" autocomplete="off">
-          </div>
-          <div class="search-filters" id="search-filters">
-            <select id="filter-media" title="Media type" aria-label="Media type">
-              <option value="all" selected>All media</option>
-              <option value="anime">Anime</option>
-              <option value="manga">Manga / Books</option>
-              <option value="manhwa">Manhwa</option>
-              <option value="webtoon">Webtoon</option>
-              <option value="manhua">Manhua</option>
-              <option value="novel">Novels</option>
-            </select>
-            <select id="filter-type" title="Format" aria-label="Format">
-              <option value="any" selected>Any format</option>
-              <option value="tv">TV</option>
-              <option value="movie">Movie</option>
-              <option value="ova">OVA</option>
-              <option value="ona">ONA</option>
-              <option value="special">Special</option>
-            </select>
-            <select id="filter-status" title="Status" aria-label="Status">
-              <option value="any" selected>Any status</option>
-              <option value="airing">Airing / Publishing</option>
-              <option value="complete">Finished</option>
-              <option value="upcoming">Upcoming</option>
-            </select>
-            <select id="filter-order" title="Sort" aria-label="Sort" class="filter-secondary">
-              <option value="popularity">Popular</option>
-              <option value="score">Score</option>
-              <option value="title">Title</option>
-              <option value="start_date">Date</option>
-            </select>
-            <select id="filter-score" title="Min score" aria-label="Minimum score" class="filter-secondary">
-              <option value="0">Score</option>
-              <option value="7">7+</option>
-              <option value="8">8+</option>
-              <option value="9">9+</option>
-            </select>
-            <button type="button" class="search-go-btn" id="search-go-btn">Go</button>
-          </div>
-        </div>
       </div>
     </div>
   </header>
 
-  <!-- Compact primary tabs (less visual noise) -->
-  <nav class="tabs tabs-primary" role="tablist">
-    <button class="tab active" data-tab="daily" role="tab"><span class="tab-label">Today</span></button>
-    <button class="tab" data-tab="weekly" role="tab"><span class="tab-label">Week</span></button>
-    <button class="tab" data-tab="monthly" role="tab"><span class="tab-label">Month</span></button>
-    <button class="tab" data-tab="now" role="tab"><span class="tab-label">Airing</span></button>
-    <button class="tab" data-tab="upcoming" role="tab"><span class="tab-label">Soon</span></button>
-  </nav>
-  <nav class="tabs tabs-secondary" role="tablist">
-    <button class="tab" data-tab="favorites" role="tab"><span class="tab-label">Favs</span><span class="tab-count" id="count-favorites">0</span></button>
-    <button class="tab" data-tab="history" role="tab"><span class="tab-label">Done</span><span class="tab-count" id="count-history">0</span></button>
-    <button class="tab" data-tab="search" role="tab"><span class="tab-label">Search</span><span class="tab-count" id="count-search">—</span></button>
-    <button class="tab" data-tab="settings" role="tab"><span class="tab-label">Settings</span></button>
-  </nav>
+  <!-- TRACK sub-chips -->
+  <div id="panel-track" class="section-panel active" data-section="track">
+    <div class="help-banner">
+      <strong>TRACKER</strong>
+      <span>See what drops today, this week, and this month. Tap a show to favorite it.</span>
+    </div>
+    <nav class="chip-row" id="track-chips" role="tablist" aria-label="Tracker views">
+      <button class="chip active" data-tab="daily" type="button">📅 Today</button>
+      <button class="chip" data-tab="weekly" type="button">📆 Week</button>
+      <button class="chip" data-tab="monthly" type="button">🗓️ Month</button>
+      <button class="chip" data-tab="now" type="button">🔴 Airing</button>
+      <button class="chip" data-tab="upcoming" type="button">🔜 Soon</button>
+    </nav>
+  </div>
+
+  <!-- ANIME search -->
+  <div id="panel-anime" class="section-panel" data-section="anime" hidden>
+    <div class="help-banner">
+      <strong>ANIME</strong>
+      <span>Search anime only. Tap <b>▶ Watch</b> to stream in the app.</span>
+    </div>
+    <div class="simple-search">
+      <input type="search" id="search-anime" class="big-search" placeholder="Type an anime name…" autocomplete="off">
+      <button type="button" class="big-go-btn" id="search-anime-go">Search</button>
+    </div>
+    <div class="chip-row soft" id="anime-sort-chips">
+      <button class="chip mini active" data-anime-order="popularity" type="button">Popular</button>
+      <button class="chip mini" data-anime-order="score" type="button">Top rated</button>
+      <button class="chip mini" data-anime-order="title" type="button">A–Z</button>
+    </div>
+  </div>
+
+  <!-- READ search -->
+  <div id="panel-read" class="section-panel" data-section="read" hidden>
+    <div class="help-banner">
+      <strong>READING</strong>
+      <span>Manga, manhwa, webtoons &amp; novels. Tap <b>📖 Read</b> to open chapters in-app.</span>
+    </div>
+    <div class="simple-search">
+      <input type="search" id="search-read" class="big-search" placeholder="Type a book / manga / webtoon…" autocomplete="off">
+      <button type="button" class="big-go-btn" id="search-read-go">Search</button>
+    </div>
+    <nav class="chip-row" id="read-media-chips" aria-label="Reading types">
+      <button class="chip active" data-read-media="all_print" type="button">📚 All</button>
+      <button class="chip" data-read-media="manga" type="button">Manga</button>
+      <button class="chip" data-read-media="manhwa" type="button">Manhwa</button>
+      <button class="chip" data-read-media="webtoon" type="button">Webtoon</button>
+      <button class="chip" data-read-media="manhua" type="button">Manhua</button>
+      <button class="chip" data-read-media="novel" type="button">Novels</button>
+    </nav>
+  </div>
+
+  <!-- SAVED -->
+  <div id="panel-saved" class="section-panel" data-section="saved" hidden>
+    <div class="help-banner">
+      <strong>SAVED</strong>
+      <span>Your favorites and finished titles live here.</span>
+    </div>
+    <nav class="chip-row" id="saved-chips" role="tablist">
+      <button class="chip active" data-tab="favorites" type="button">⭐ Favorites <span class="chip-count" id="count-favorites">0</span></button>
+      <button class="chip" data-tab="history" type="button">✅ Finished <span class="chip-count" id="count-history">0</span></button>
+    </nav>
+  </div>
+
+  <!-- Hidden legacy controls (JS still uses these IDs) -->
+  <div class="legacy-hidden" aria-hidden="true" hidden>
+    <input type="search" id="search" value="">
+    <select id="filter-media"><option value="all" selected>all</option><option value="anime">anime</option><option value="manga">manga</option><option value="manhwa">manhwa</option><option value="webtoon">webtoon</option><option value="manhua">manhua</option><option value="novel">novel</option></select>
+    <select id="filter-type"><option value="any" selected>any</option></select>
+    <select id="filter-status"><option value="any" selected>any</option></select>
+    <select id="filter-order"><option value="popularity" selected>popularity</option><option value="score">score</option><option value="title">title</option><option value="start_date">start_date</option></select>
+    <select id="filter-score"><option value="0" selected>0</option></select>
+    <button type="button" id="search-go-btn">Go</button>
+    <nav class="tabs">
+      <button class="tab active" data-tab="daily"></button>
+      <button class="tab" data-tab="weekly"></button>
+      <button class="tab" data-tab="monthly"></button>
+      <button class="tab" data-tab="now"></button>
+      <button class="tab" data-tab="upcoming"></button>
+      <button class="tab" data-tab="favorites"></button>
+      <button class="tab" data-tab="history"></button>
+      <button class="tab" data-tab="search"></button>
+      <button class="tab" data-tab="settings"></button>
+    </nav>
+  </div>
 
   <div id="subheader" class="subheader hidden"></div>
 
-  <main class="main">
+  <main class="main simple-main">
     <div id="loading" class="loading">
       <div class="spinner"></div>
       <p id="loading-text">Loading…</p>
@@ -114,11 +140,36 @@
     </div>
   </main>
 
-  <footer class="footer">
-    <p id="app-version-line"><strong>Grey GodZilla Anime App</strong> · <span id="footer-version">v1.5.4</span></p>
+  <!-- Bottom nav: 5 big dumb-friendly buttons -->
+  <nav class="bottom-nav" id="bottom-nav" aria-label="Main">
+    <button type="button" class="nav-item active" data-section="track">
+      <span class="nav-ico">📅</span>
+      <span class="nav-label">Track</span>
+    </button>
+    <button type="button" class="nav-item" data-section="anime">
+      <span class="nav-ico">🎬</span>
+      <span class="nav-label">Anime</span>
+    </button>
+    <button type="button" class="nav-item" data-section="read">
+      <span class="nav-ico">📖</span>
+      <span class="nav-label">Read</span>
+    </button>
+    <button type="button" class="nav-item" data-section="saved">
+      <span class="nav-ico">⭐</span>
+      <span class="nav-label">Saved</span>
+    </button>
+    <button type="button" class="nav-item" data-section="settings">
+      <span class="nav-ico">⚙️</span>
+      <span class="nav-label">More</span>
+    </button>
+  </nav>
+
+  <footer class="footer simple-footer">
+    <p id="app-version-line"><strong>Grey GodZilla Anime App</strong> · <span id="footer-version">v1.6.0</span></p>
     <p class="updated" id="last-updated"></p>
   </footer>
 
+  <!-- Stream overlay -->
   <div id="stream-overlay" class="stream-overlay hidden" aria-hidden="true">
     <div class="stream-panel" id="stream-panel">
       <div class="stream-header">
@@ -135,18 +186,18 @@
       <div class="stream-player-wrap" id="stream-player-wrap">
         <video id="stream-video" class="stream-video" controls playsinline webkit-playsinline></video>
         <p id="stream-player-hint" class="stream-subtitle" style="padding:0.65rem;text-align:center;">
-          Tap an episode — plays <strong>in-app</strong>. Rotate the phone for landscape. ✕ closes.
+          Tap an episode — plays <strong>in-app</strong>.
         </p>
       </div>
       <div class="stream-meta">
-        <a id="stream-ah-link" href="https://animeheaven.me" target="_blank" rel="noopener">AnimeHeaven</a>
+        <a id="stream-ah-link" href="https://animeheaven.me" target="_blank" rel="noopener">Source</a>
         <span id="stream-ep-label" class="stream-ep-label"></span>
       </div>
       <div id="stream-episodes" class="stream-episodes"></div>
     </div>
   </div>
 
-  <!-- Free in-app reader for manga / manhwa / webtoons / novels -->
+  <!-- Reader overlay -->
   <div id="reader-overlay" class="reader-overlay hidden" aria-hidden="true">
     <div class="reader-panel" id="reader-panel">
       <div class="reader-header">
@@ -155,7 +206,7 @@
           <p id="reader-subtitle" class="reader-subtitle"></p>
         </div>
         <div class="reader-header-actions">
-          <button type="button" class="stream-tool-btn" id="reader-quality-btn" title="Image quality">HQ</button>
+          <button type="button" class="stream-tool-btn" id="reader-quality-btn" title="Image quality">Data saver</button>
           <button type="button" class="stream-close" id="reader-close-btn" aria-label="Close">✕</button>
         </div>
       </div>
