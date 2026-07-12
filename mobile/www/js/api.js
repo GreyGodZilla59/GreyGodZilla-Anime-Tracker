@@ -6,13 +6,15 @@
   'use strict';
 
   const APP_NAME = 'Grey GodZilla Anime Tracker';
-  const APP_VERSION = '1.6.1';
+  const APP_VERSION = '1.6.2';
   const APP_PUBLISHER = 'Grey GodZilla';
   const ANILIST_URL = 'https://graphql.anilist.co';
-  const AH_BASE = 'https://animeheaven.me';
+  const AH_BASES = ['https://animeheaven.me', 'https://animeheaven.ru'];
+  const AH_BASE = AH_BASES[0];
   // Free public reading catalog (manga / manhwa / webtoons / novels)
   const MD_API = 'https://api.mangadex.org';
-  const MD_UA = 'GreyGodZillaAnimeApp/1.6.1 (free personal reader; github.com/GreyGodZilla59)';
+  const MD_UA = 'GreyGodZillaAnimeApp/1.6.2 (free personal reader; github.com/GreyGodZilla59)';
+  const AH_UA = 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36';
   const HTTP_TIMEOUT_MS = 25000;
   const GQL_MAX_ATTEMPTS = 4;
   const GQL_BASE_DELAY_MS = 450;
@@ -620,49 +622,152 @@ fragment MediaFields on Media {
     const q = normalizeTitle(query);
     const c = normalizeTitle(candidate);
     if (!q || !c) return 0;
-    if (q === c) return 1;
-    if (q.includes(c) || c.includes(q)) return 0.92;
-    const qw = new Set(q.split(' '));
-    const cw = new Set(c.split(' '));
+    if (q === c) return 1.0;
+    // Exact after stripping season noise
+    const stripNoise = (s) => s
+      .replace(/\b(tv|ova|ona|movie|special|dub|sub|uncut|hd)\b/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (stripNoise(q) === stripNoise(c)) return 0.98;
+    // "Naruto" should beat "Naruto Shippuden" when query is just Naruto
+    if (c.startsWith(`${q} `) || c.endsWith(` ${q}`)) {
+      const extra = c.length - q.length;
+      return Math.max(0.72, 0.9 - extra * 0.01);
+    }
+    if (q.startsWith(`${c} `)) return 0.9;
+    if (c.includes(q) || q.includes(c)) {
+      const longer = Math.max(q.length, c.length);
+      const shorter = Math.min(q.length, c.length);
+      return 0.7 + (shorter / longer) * 0.2;
+    }
+    const qw = q.split(' ').filter(Boolean);
+    const cw = new Set(c.split(' ').filter(Boolean));
     let overlap = 0;
     qw.forEach((w) => { if (cw.has(w)) overlap += 1; });
-    return (overlap / Math.max(qw.size, 1)) * 0.85;
+    if (!overlap) return 0;
+    return (overlap / Math.max(qw.length, cw.size || 1)) * 0.82;
   }
 
-  async function ahFetch(path, params) {
-    let url = path.startsWith('http') ? path : `${AH_BASE}/${path.replace(/^\//, '')}`;
-    if (params) {
-      const qs = new URLSearchParams(params).toString();
-      url += (url.includes('?') ? '&' : '?') + qs;
+  function isPlayableMediaUrl(u) {
+    const s = String(u || '');
+    if (!s || /[&?]error\d*/i.test(s)) return false;
+    if (/anime\.php|gate\.php|mangadex\.org/i.test(s) && !/video\.mp4/i.test(s)) return false;
+    return /video\.mp4|\.mp4(\?|$)|\.m3u8(\?|$)|\.webm(\?|$)/i.test(s);
+  }
+
+  function rankStreamUrl(u) {
+    // Prefer working co.* CDN mirrors first
+    if (/\/\/co\./i.test(u)) return 0;
+    if (/\/\/c[a-z]\./i.test(u) && !/error/i.test(u)) return 1;
+    if (/\.m3u8/i.test(u)) return 2;
+    return 3;
+  }
+
+  async function ahFetch(path, params, baseOverride) {
+    const bases = baseOverride ? [baseOverride] : AH_BASES.slice();
+    let lastErr = null;
+    for (const base of bases) {
+      try {
+        let url = path.startsWith('http') ? path : `${base}/${String(path).replace(/^\//, '')}`;
+        if (params) {
+          const qs = new URLSearchParams(params).toString();
+          url += (url.includes('?') ? '&' : '?') + qs;
+        }
+        const res = await httpRequest(url, {
+          method: 'GET',
+          headers: {
+            Accept: 'text/html,application/xhtml+xml,*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            Referer: `${base}/`,
+            Origin: base,
+            'User-Agent': AH_UA,
+          },
+          attempts: 2,
+          timeoutMs: 28000,
+        });
+        if (!res.ok) {
+          lastErr = new Error(`AnimeHeaven HTTP ${res.status}`);
+          continue;
+        }
+        const text = await res.text();
+        if (text && text.length > 40) return { html: text, base };
+      } catch (e) {
+        lastErr = e;
+      }
     }
-    const res = await httpRequest(url, {
-      method: 'GET',
-      headers: {
-        Accept: 'text/html,application/xhtml+xml',
-        'Accept-Language': 'en-US,en;q=0.9',
-        Referer: `${AH_BASE}/`,
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36',
-      },
-    });
-    if (!res.ok) throw new Error(`AnimeHeaven HTTP ${res.status}`);
-    return res.text();
+    throw lastErr || new Error('AnimeHeaven unreachable');
   }
 
-  function parseFastSearch(html) {
+  function parseFastSearch(html, base = AH_BASE) {
     const results = [];
     const seen = new Set();
-    const re = /href='\/anime\.php\?([a-z0-9]+)'[\s\S]*?alt='([^']*)'[\s\S]*?class='fastname'>([^<]+)</gi;
-    let m;
-    while ((m = re.exec(html)) !== null) {
-      if (seen.has(m[1])) continue;
-      seen.add(m[1]);
-      results.push({
-        ah_id: m[1],
-        title: (m[3] || m[2] || '').trim(),
-        url: `${AH_BASE}/anime.php?${m[1]}`,
-      });
+    const patterns = [
+      /href=['"]\/anime\.php\?([a-z0-9]+)['"][\s\S]*?alt=['"]([^'"]*)['"][\s\S]*?class=['"]fastname['"]>([^<]+)/gi,
+      /href=['"]\/anime\.php\?([a-z0-9]+)['"][\s\S]*?class=['"]fastname['"]>([^<]+)/gi,
+      /anime\.php\?([a-z0-9]+)[^>]*>[\s\S]*?fastname['"]?>([^<]+)/gi,
+    ];
+    for (const re of patterns) {
+      let m;
+      while ((m = re.exec(html)) !== null) {
+        const id = m[1];
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const title = (m[3] || m[2] || '').trim();
+        if (!title) continue;
+        results.push({
+          ah_id: id,
+          title,
+          url: `${base}/anime.php?${id}`,
+        });
+      }
+      if (results.length) break;
     }
     return results;
+  }
+
+  function parseEpisodes(html) {
+    const byEp = new Map();
+    const patterns = [
+      // gatea("hash") ... watch2 ... >N
+      /gatea\(["']([a-f0-9]+)["']\)[\s\S]{0,800}?watch2[^>]*>\s*(\d+)/gi,
+      // id="hash" ... watch2 ... >N
+      /\bid=["']([a-f0-9]{16,})["'][\s\S]{0,800}?watch2[^>]*>\s*(\d+)/gi,
+      // gatea then Episode then number nearby
+      /gatea\(["']([a-f0-9]+)["']\)[\s\S]{0,500}?Episode[\s\S]{0,80}?>\s*(\d+)/gi,
+    ];
+    for (const re of patterns) {
+      let m;
+      while ((m = re.exec(html)) !== null) {
+        const hash = m[1];
+        const ep = Number(m[2]);
+        if (!hash || !ep) continue;
+        if (!byEp.has(ep)) byEp.set(ep, { episode: ep, gate_hash: hash });
+      }
+    }
+    const episodes = [...byEp.values()];
+    episodes.sort((a, b) => b.episode - a.episode);
+    return episodes;
+  }
+
+  function extractStreamSources(html) {
+    const sources = [];
+    const push = (raw) => {
+      if (!raw) return;
+      let src = String(raw).trim().replace(/&amp;/g, '&');
+      // strip accidental trailing quotes/junk from bad parses
+      src = src.replace(/['"<>].*$/, '').trim();
+      if (!isPlayableMediaUrl(src)) return;
+      if (!sources.includes(src)) sources.push(src);
+    };
+    let m;
+    const reSource = /<source[^>]+src=['"]([^'"]+)['"]/gi;
+    while ((m = reSource.exec(html)) !== null) push(m[1]);
+    const reVideo = /https?:\/\/[a-z0-9.-]*animeheaven\.[a-z.]+\/video\.mp4\?[a-z0-9&._=-]+/gi;
+    while ((m = reVideo.exec(html)) !== null) push(m[0]);
+    const reAnyMp4 = /https?:\/\/[^'"\s<>]+video\.mp4\?[^'"\s<>]+/gi;
+    while ((m = reAnyMp4.exec(html)) !== null) push(m[0]);
+    sources.sort((a, b) => rankStreamUrl(a) - rankStreamUrl(b));
+    return sources;
   }
 
   // ---------- Main API object ----------
@@ -1457,142 +1562,175 @@ fragment MediaFields on Media {
 
     async search_stream(query, limit = 12) {
       try {
-        const html = await ahFetch('fastsearch.php', { xhr: '1', s: query });
-        return { data: parseFastSearch(html).slice(0, limit) };
+        const { html, base } = await ahFetch('fastsearch.php', { xhr: '1', s: query });
+        return { data: parseFastSearch(html, base).slice(0, limit), base };
       } catch (e) {
         return { data: [], error: String(e.message || e) };
       }
     },
 
     async resolve_stream(malId, titles) {
-      const titleList = (titles || []).filter(Boolean);
-      if (!titleList.length) return { ok: false, error: 'No title to search AnimeHeaven' };
+      const titleList = (titles || []).map((t) => String(t || '').trim()).filter(Boolean);
+      if (!titleList.length) return { ok: false, error: 'No title to search for streaming' };
       try {
-        let best = null;
-        for (const t of titleList) {
-          const hits = await this.search_stream(t, 10);
+        const candidates = [];
+        const seenIds = new Set();
+        // Prefer shorter English titles first (better exact matches like "Naruto")
+        const ordered = [...titleList].sort((a, b) => a.length - b.length);
+        for (const t of ordered.slice(0, 6)) {
+          const hits = await this.search_stream(t, 15);
           for (const hit of hits.data || []) {
+            if (seenIds.has(hit.ah_id)) continue;
+            seenIds.add(hit.ah_id);
             const score = Math.max(...titleList.map((x) => scoreMatch(x, hit.title)));
-            if (!best || score > best.score) best = { ...hit, score };
+            candidates.push({ ...hit, score, base: hits.base || AH_BASE });
           }
         }
+        candidates.sort((a, b) => b.score - a.score || a.title.length - b.title.length);
+        const best = candidates[0];
         if (!best || best.score < 0.42) {
-          return { ok: false, error: 'Could not match this show on AnimeHeaven', suggestions: [] };
+          return {
+            ok: false,
+            error: 'Could not match this show for streaming. Try a shorter English title.',
+            suggestions: candidates.slice(0, 6),
+          };
         }
-        const html = await ahFetch(`anime.php?${best.ah_id}`);
-        const titleMatch = html.match(/class='infotitle c'>([^<]+)</i);
-        const jpMatch = html.match(/class='infotitlejp c'>([^<]+)</i);
-        const episodes = [];
-        const byEp = new Map();
-        const epRe = /gatea\(["']([a-f0-9]+)["']\)[\s\S]{0,400}?watch2[^>]*>(\d+)/gi;
-        let m;
-        while ((m = epRe.exec(html)) !== null) {
-          byEp.set(Number(m[2]), { episode: Number(m[2]), gate_hash: m[1] });
+
+        // Try best match; if it has no episodes, try next suggestions
+        let chosen = null;
+        let pageHtml = '';
+        let pageBase = best.base || AH_BASE;
+        for (const cand of candidates.slice(0, 5)) {
+          try {
+            const page = await ahFetch(`anime.php?${cand.ah_id}`, null, cand.base || AH_BASE);
+            const eps = parseEpisodes(page.html);
+            if (eps.length) {
+              chosen = cand;
+              pageHtml = page.html;
+              pageBase = page.base;
+              chosen.episodes = eps;
+              break;
+            }
+          } catch { /* try next */ }
         }
-        episodes.push(...byEp.values());
-        episodes.sort((a, b) => b.episode - a.episode);
+        if (!chosen) {
+          return {
+            ok: false,
+            error: 'Matched a title but found no playable episodes.',
+            suggestions: candidates.slice(0, 6),
+          };
+        }
+
+        const titleMatch = pageHtml.match(/class=['"]infotitle[^'"]*['"]>([^<]+)/i);
+        const jpMatch = pageHtml.match(/class=['"]infotitlejp[^'"]*['"]>([^<]+)/i);
         return {
           ok: true,
-          match_score: Math.round(best.score * 100) / 100,
-          ah_id: best.ah_id,
-          title: (titleMatch && titleMatch[1].trim()) || best.title,
+          match_score: Math.round(chosen.score * 100) / 100,
+          ah_id: chosen.ah_id,
+          title: (titleMatch && titleMatch[1].trim()) || chosen.title,
           title_japanese: (jpMatch && jpMatch[1].trim()) || '',
-          url: best.url,
-          episodes,
-          episode_count: episodes.length,
+          url: `${pageBase}/anime.php?${chosen.ah_id}`,
+          base: pageBase,
+          episodes: chosen.episodes,
+          episode_count: chosen.episodes.length,
+          suggestions: candidates.slice(0, 6).filter((c) => c.ah_id !== chosen.ah_id),
         };
       } catch (e) {
         return {
           ok: false,
-          error: `${e.message || e}. On Android, open the show on AnimeHeaven if streaming fails.`,
+          error: String(e.message || e),
         };
       }
     },
 
-    async get_stream_anime(ahId) {
+    async get_stream_anime(ahId, base) {
       try {
-        const html = await ahFetch(`anime.php?${ahId}`);
-        const titleMatch = html.match(/class='infotitle c'>([^<]+)</i);
-        const episodes = [];
-        const byEp = new Map();
-        const epRe = /gatea\(["']([a-f0-9]+)["']\)[\s\S]{0,400}?watch2[^>]*>(\d+)/gi;
-        let m;
-        while ((m = epRe.exec(html)) !== null) {
-          byEp.set(Number(m[2]), { episode: Number(m[2]), gate_hash: m[1] });
-        }
-        episodes.push(...byEp.values());
-        episodes.sort((a, b) => b.episode - a.episode);
+        const page = await ahFetch(`anime.php?${ahId}`, null, base || AH_BASE);
+        const titleMatch = page.html.match(/class=['"]infotitle[^'"]*['"]>([^<]+)/i);
+        const episodes = parseEpisodes(page.html);
         return {
           ok: true,
           ah_id: ahId,
           title: (titleMatch && titleMatch[1].trim()) || ahId,
           episodes,
           episode_count: episodes.length,
-          url: `${AH_BASE}/anime.php?${ahId}`,
+          url: `${page.base}/anime.php?${ahId}`,
+          base: page.base,
         };
       } catch (e) {
         return { ok: false, error: String(e.message || e) };
       }
     },
 
-    async get_stream_sources(gateHash) {
+    async get_stream_sources(gateHash, base) {
       gateHash = String(gateHash || '').trim();
       if (!gateHash) return { ok: false, error: 'Missing episode key' };
-      try {
-        const url = `${AH_BASE}/gate.php`;
-        const headers = {
-          Accept: 'text/html,application/xhtml+xml',
-          'Accept-Language': 'en-US,en;q=0.9',
-          Referer: `${AH_BASE}/`,
-          Origin: AH_BASE,
-          Cookie: `key=${gateHash}`,
-          'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36',
-        };
-
-        let html = '';
-        // Prefer Capacitor native HTTP (bypasses CORS, can send Cookie)
-        if (global.Capacitor && global.Capacitor.Plugins && global.Capacitor.Plugins.CapacitorHttp) {
-          const Http = global.Capacitor.Plugins.CapacitorHttp;
-          try {
-            await Http.request({ url: `${AH_BASE}/`, method: 'GET', headers: { ...headers } });
-          } catch { /* warm-up optional */ }
-          const res = await Http.request({
-            url,
-            method: 'GET',
-            headers,
-            connectTimeout: 25000,
-            readTimeout: 25000,
-          });
-          html = typeof res.data === 'string' ? res.data : String(res.data || '');
-        } else {
-          // WebView fetch fallback (may fail CORS on some builds)
-          const res = await httpRequest(url, { method: 'GET', headers });
-          html = await res.text();
-        }
-
-        const sources = [];
-        const re = /<source[^>]+src=['"]([^'"]+)['"]/gi;
-        let m;
-        while ((m = re.exec(html)) !== null) {
-          const src = m[1];
-          if (/[&?]error\d*/i.test(src)) continue;
-          if (!sources.includes(src)) sources.push(src);
-        }
-        if (!sources.length) {
-          return {
-            ok: false,
-            error: 'No stream found for this episode — try Open on AnimeHeaven.me',
-            external: `${AH_BASE}/gate.php`,
+      const bases = base ? [base, ...AH_BASES.filter((b) => b !== base)] : AH_BASES.slice();
+      let lastErr = null;
+      for (const site of bases) {
+        try {
+          const url = `${site}/gate.php`;
+          const headers = {
+            Accept: 'text/html,application/xhtml+xml,*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            Referer: `${site}/`,
+            Origin: site,
+            Cookie: `key=${gateHash}; Path=/`,
+            'User-Agent': AH_UA,
           };
+
+          let html = '';
+          if (global.Capacitor && global.Capacitor.Plugins && global.Capacitor.Plugins.CapacitorHttp) {
+            const Http = global.Capacitor.Plugins.CapacitorHttp;
+            try {
+              // Warm cookies on the domain
+              await Http.setCookie?.({ url: site, key: 'key', value: gateHash });
+            } catch { /* plugin may not support setCookie */ }
+            try {
+              await Http.request({
+                url: `${site}/`,
+                method: 'GET',
+                headers: { 'User-Agent': AH_UA, Referer: `${site}/` },
+                connectTimeout: 15000,
+                readTimeout: 15000,
+              });
+            } catch { /* warm-up optional */ }
+            const res = await Http.request({
+              url,
+              method: 'GET',
+              headers,
+              connectTimeout: 25000,
+              readTimeout: 25000,
+            });
+            html = typeof res.data === 'string' ? res.data : String(res.data || '');
+          } else {
+            const res = await httpRequest(url, { method: 'GET', headers, attempts: 2, timeoutMs: 28000 });
+            html = await res.text();
+          }
+
+          const sources = extractStreamSources(html);
+          if (sources.length) {
+            return {
+              ok: true,
+              sources,
+              primary: sources[0],
+              playback_url: sources[0],
+              referer: `${site}/`,
+              origin: site,
+              gate_hash: gateHash,
+            };
+          }
+          lastErr = 'No stream urls in gate page';
+        } catch (e) {
+          lastErr = e;
         }
-        return { ok: true, sources, primary: sources[0], playback_url: sources[0], referer: `${AH_BASE}/` };
-      } catch (e) {
-        return {
-          ok: false,
-          error: String(e.message || e),
-          external: `${AH_BASE}/gate.php`,
-        };
       }
+      return {
+        ok: false,
+        error: String(lastErr && lastErr.message ? lastErr.message : lastErr || 'No stream found'),
+        gate_hash: gateHash,
+        external: `${AH_BASE}/gate.php`,
+      };
     },
 
     // ---------- Free in-app reader (MangaDex public API) ----------

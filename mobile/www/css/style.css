@@ -786,6 +786,17 @@ body.stream-fullscreen .stream-video {
   background: var(--tab-active); border-color: var(--accent);
   color: var(--accent3);
 }
+.stream-ep-grid {
+  display: flex; flex-wrap: wrap; gap: 0.35rem;
+}
+.stream-alts {
+  margin-bottom: 0.45rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--line-soft);
+}
+.stream-alts .stream-ep-btn {
+  margin: 0.2rem 0.25rem 0.2rem 0;
+}
 
 /* ---- In-app reader (manga / manhwa / webtoon / novel) ---- */
 .reader-overlay {

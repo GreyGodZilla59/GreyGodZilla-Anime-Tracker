@@ -98,20 +98,31 @@ public class NativePlayerActivity extends AppCompatActivity {
             return;
         }
 
+        // Derive Origin from referer when possible (supports animeheaven.me / .ru mirrors)
+        String origin = "https://animeheaven.me";
+        try {
+            Uri refUri = Uri.parse(referer);
+            if (refUri != null && refUri.getScheme() != null && refUri.getHost() != null) {
+                origin = refUri.getScheme() + "://" + refUri.getHost();
+            }
+        } catch (Exception ignored) { }
+
         Map<String, String> headers = new HashMap<>();
-        headers.put("Referer", referer);
-        headers.put("Origin", "https://animeheaven.me");
+        headers.put("Referer", referer != null ? referer : origin + "/");
+        headers.put("Origin", origin);
         headers.put(
                 "User-Agent",
                 "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 "
                         + "(KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
         );
         headers.put("Accept", "*/*");
+        headers.put("Accept-Language", "en-US,en;q=0.9");
+        headers.put("Connection", "keep-alive");
 
         DefaultHttpDataSource.Factory httpFactory = new DefaultHttpDataSource.Factory()
                 .setDefaultRequestProperties(headers)
-                .setConnectTimeoutMs(20000)
-                .setReadTimeoutMs(30000)
+                .setConnectTimeoutMs(25000)
+                .setReadTimeoutMs(45000)
                 .setAllowCrossProtocolRedirects(true)
                 .setUserAgent(headers.get("User-Agent"));
 
@@ -139,10 +150,11 @@ public class NativePlayerActivity extends AppCompatActivity {
             public void onPlayerError(PlaybackException error) {
                 urlIndex++;
                 if (urlIndex < urls.size()) {
-                    statusView.setText("Retrying source " + (urlIndex + 1) + "/" + urls.size() + "…");
+                    statusView.setText("Source failed · trying " + (urlIndex + 1) + "/" + urls.size() + "…");
                     playCurrent();
                 } else {
-                    statusView.setText("Stream failed. Close and try another episode.");
+                    String msg = error != null ? error.getErrorCodeName() : "unknown";
+                    statusView.setText("All sources failed (" + msg + "). Close and pick another episode, or use backup player from the list.");
                 }
             }
         });

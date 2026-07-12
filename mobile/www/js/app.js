@@ -959,7 +959,7 @@ async function renderSettings() {
         <h3>About</h3>
         <p class="settings-hint">In-app name: <strong>Grey GodZilla Anime App</strong><br>
         Launcher icon name: <strong>GGZ Anime</strong><br>
-        Version: <strong id="settings-version">v1.6.1</strong></p>
+        Version: <strong id="settings-version">v1.6.2</strong></p>
       </section>
     </div>
   `);
@@ -2067,14 +2067,46 @@ function renderStreamEpisodes() {
   const wrap = $('#stream-episodes');
   if (!wrap) return;
   const current = state.stream.currentEp;
-  wrap.innerHTML = (state.stream.episodes || []).map((ep) => `
+  const epHtml = (state.stream.episodes || []).map((ep) => `
     <button type="button" class="stream-ep-btn ${current === ep.episode ? 'active' : ''}"
-      data-stream-ep="${ep.episode}" data-stream-hash="${ep.gate_hash}">
+      data-stream-ep="${ep.episode}" data-stream-hash="${ep.gate_hash || ''}">
       Ep ${ep.episode}
     </button>
   `).join('');
+  const hint = state.stream.episodes?.length
+    ? `<p class="stream-subtitle" style="padding:0.25rem 0 0.45rem;">Tap an episode · auto uses best free source · backup player if CDN fails</p>`
+    : '';
+  wrap.innerHTML = `${state.stream.altHtml || ''}${hint}<div class="stream-ep-grid">${epHtml}</div>`;
   wrap.querySelectorAll('[data-stream-hash]').forEach((btn) => {
     btn.addEventListener('click', () => playStreamEpisode(Number(btn.dataset.streamEp), btn.dataset.streamHash));
+  });
+  wrap.querySelectorAll('[data-stream-alt]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const api = await waitForApi();
+      const ahId = btn.dataset.streamAlt;
+      setStreamStatus(`Loading “${btn.dataset.streamAltTitle}”…`);
+      try {
+        const page = await api.get_stream_anime(ahId, state.stream.base);
+        if (!page?.ok || !(page.episodes || []).length) {
+          setStreamStatus(page?.error || 'No episodes on that match.', 'err');
+          return;
+        }
+        await applyStreamResolved({
+          ok: true,
+          ah_id: ahId,
+          title: page.title || btn.dataset.streamAltTitle,
+          url: page.url,
+          base: page.base,
+          episodes: page.episodes,
+          suggestions: [],
+        }, state.stream.anime || { title: page.title });
+        renderStreamEpisodes();
+        const target = state.stream.episodes[0];
+        if (target) await playStreamEpisode(target.episode, target.gate_hash);
+      } catch (e) {
+        setStreamStatus(e?.message || String(e), 'err');
+      }
+    });
   });
 }
 
@@ -2454,29 +2486,61 @@ async function openReaderOverlay(item) {
   }
 }
 
+function isPlayableMediaUrl(u) {
+  const s = String(u || '');
+  if (!s || /[&?]error\d*/i.test(s)) return false;
+  if (/anime\.php|gate\.php/i.test(s) && !/video\.mp4/i.test(s)) return false;
+  return /video\.mp4|\.mp4(\?|$)|\.m3u8(\?|$)/i.test(s);
+}
+
 /** Always stays inside the app — never opens Chrome/system browser. */
-async function openInAppPlayer({ gateHash = '', url = '', urls = [], title = 'Watch', referer = 'https://animeheaven.me/' } = {}) {
+async function openInAppPlayer({
+  gateHash = '',
+  url = '',
+  urls = [],
+  title = 'Watch',
+  referer = 'https://animeheaven.me/',
+  preferWebView = false,
+} = {}) {
   const plugin = getAhPlayer();
   if (!plugin) return { ok: false, error: 'Native player not available' };
 
-  // Preferred: native ExoPlayer with Referer (true in-app video)
-  const list = Array.isArray(urls) ? urls.filter(Boolean) : [];
-  if (url && !list.includes(url)) list.unshift(url);
-  if (list.length && plugin.playNative) {
-    await plugin.playNative({
-      urls: list,
-      url: list[0],
-      referer: referer || 'https://animeheaven.me/',
-      title: title || 'Watch',
-    });
-    return { ok: true, mode: 'native' };
+  // Only feed real media URLs to ExoPlayer (never anime.php HTML pages)
+  const mediaUrls = (Array.isArray(urls) ? urls : [])
+    .concat(url ? [url] : [])
+    .map((u) => String(u || '').trim())
+    .filter(isPlayableMediaUrl);
+  // de-dupe preserve order
+  const list = [];
+  mediaUrls.forEach((u) => { if (!list.includes(u)) list.push(u); });
+
+  if (!preferWebView && list.length && plugin.playNative) {
+    try {
+      await plugin.playNative({
+        urls: list,
+        url: list[0],
+        referer: referer || 'https://animeheaven.me/',
+        title: title || 'Watch',
+      });
+      return { ok: true, mode: 'native', count: list.length };
+    } catch (e) {
+      // fall through to WebView
+      console.warn('playNative failed', e);
+    }
   }
 
-  // Fallback: in-app WebView with Grey GodZilla title bar (still our app)
+  // Fallback: in-app WebView (still our app) — best for titles that break CDN extraction
   if (plugin.openEpisode) {
     await plugin.openEpisode({
       gateHash: gateHash || '',
-      url: url || list[0] || '',
+      url: url || '',
+      title: title || 'Watch',
+    });
+    return { ok: true, mode: 'webview' };
+  }
+  if (plugin.openUrl && (url || gateHash)) {
+    await plugin.openUrl({
+      url: url || 'https://animeheaven.me/gate.php',
       title: title || 'Watch',
     });
     return { ok: true, mode: 'webview' };
@@ -2496,17 +2560,18 @@ async function playStreamEpisode(episode, gateHash) {
   state.stream.loading = true;
   renderStreamEpisodes();
   setStreamStatus(`Loading episode ${episode}…`);
-  $('#stream-ep-label').textContent = `Episode ${episode}`;
+  setText('#stream-ep-label', `Episode ${episode}`);
 
   const showUrl = state.stream.showUrl || state.stream.ahUrl || '';
   const title = state.stream.anime ? titleOf(state.stream.anime) : 'Watch';
   const epTitle = `${title} · Ep ${episode}`;
+  const base = state.stream.base || undefined;
 
-  // Resolve stream URLs (with Referer-capable native player on Android)
+  // Resolve stream URLs
   let result = null;
   if (api?.get_stream_sources) {
     try {
-      result = await api.get_stream_sources(gateHash);
+      result = await api.get_stream_sources(gateHash, base);
     } catch (e) {
       result = { ok: false, error: String(e?.message || e) };
     }
@@ -2515,7 +2580,7 @@ async function playStreamEpisode(episode, gateHash) {
 
   const candidates = [];
   const pushSrc = (u) => {
-    if (u && !String(u).includes('&error') && !candidates.includes(u)) candidates.push(u);
+    if (isPlayableMediaUrl(u) && !candidates.includes(u)) candidates.push(u);
   };
   if (result?.ok) {
     pushSrc(result.playback_url);
@@ -2523,7 +2588,7 @@ async function playStreamEpisode(episode, gateHash) {
     (result.sources || []).forEach(pushSrc);
   }
 
-  // --- Android: always stay in-app ---
+  // --- Android: stay in-app ---
   if (isNative && getAhPlayer()) {
     try {
       if (candidates.length) {
@@ -2532,13 +2597,13 @@ async function playStreamEpisode(episode, gateHash) {
           title: epTitle,
           referer: result?.referer || 'https://animeheaven.me/',
           gateHash,
-          url: showUrl,
+          // do NOT pass showUrl as a media url
         });
         if (opened.ok) {
           setStreamStatus(
             opened.mode === 'native'
-              ? `Playing episode ${episode} in-app. Close player (X) to return.`
-              : `Episode ${episode} in-app player. Close (X) to return.`,
+              ? `Playing ep ${episode} in-app (${candidates.length} source${candidates.length > 1 ? 's' : ''}).`
+              : `Episode ${episode} opened in-app. Close (X) to return.`,
           );
           try {
             await api?.set_watch_progress?.(state.stream.anime?.mal_id, episode, 1, 0);
@@ -2546,12 +2611,18 @@ async function playStreamEpisode(episode, gateHash) {
           return;
         }
       }
-      // No CDN urls — still in-app WebView with cookie for gate.php
-      await openInAppPlayer({ gateHash, url: showUrl, title: epTitle });
-      setStreamStatus(`Episode ${episode} in-app. Close (X) to return.`);
+      // CDN extraction failed → in-app WebView player with gate cookie (still works for Naruto etc.)
+      setStreamStatus('Opening backup in-app player…');
+      await openInAppPlayer({
+        gateHash,
+        url: showUrl,
+        title: epTitle,
+        preferWebView: true,
+      });
+      setStreamStatus(`Episode ${episode} · backup in-app player. Close (X) to return.`);
       return;
     } catch (e) {
-      setStreamStatus(`In-app player error: ${e?.message || e}`, 'err');
+      setStreamStatus(`Player error: ${e?.message || e}`, 'err');
       return;
     }
   }
@@ -2601,6 +2672,48 @@ async function playStreamEpisode(episode, gateHash) {
   await tryPlay(0);
 }
 
+async function applyStreamResolved(resolved, anime) {
+  const title = titleOf(anime);
+  state.stream.ahId = resolved.ah_id;
+  state.stream.episodes = resolved.episodes || [];
+  state.stream.base = resolved.base || 'https://animeheaven.me';
+  state.stream.showUrl = resolved.url || (resolved.ah_id ? `${state.stream.base}/anime.php?${resolved.ah_id}` : '');
+  state.stream.ahUrl = state.stream.showUrl;
+  state.stream.suggestions = resolved.suggestions || [];
+  setText('#stream-title', resolved.title || title);
+  setText(
+    '#stream-subtitle',
+    `${resolved.title_japanese || 'In-app stream'}${resolved.match_score ? ` · match ${Math.round(resolved.match_score * 100)}%` : ''}`,
+  );
+  const ahLink = $('#stream-ah-link');
+  if (ahLink) {
+    ahLink.href = state.stream.showUrl || 'https://animeheaven.me';
+    ahLink.textContent = 'Open show page in-app';
+    ahLink.onclick = (e) => {
+      if (getAhPlayer()) {
+        e.preventDefault();
+        openInAppPlayer({
+          url: state.stream.showUrl,
+          title: resolved.title || title,
+          preferWebView: true,
+        });
+      }
+    };
+  }
+  // Show alternate matches when scoring was ambiguous (Naruto vs Shippuden, etc.)
+  if (state.stream.suggestions?.length) {
+    const alts = state.stream.suggestions.slice(0, 4).map((s) =>
+      `<button type="button" class="stream-ep-btn" data-stream-alt="${escapeHtml(s.ah_id)}" data-stream-alt-title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</button>`,
+    ).join('');
+    setStreamStatus(`Matched “${resolved.title}”. Wrong show? Pick another:`);
+    const epBox = $('#stream-episodes');
+    // render episodes first then prepend alts via renderStreamEpisodes customization
+    state.stream.altHtml = `<div class="stream-alts"><div class="stream-subtitle" style="padding:0.35rem 0;">Other matches:</div>${alts}</div>`;
+  } else {
+    state.stream.altHtml = '';
+  }
+}
+
 async function openStreamOverlay(anime) {
   const api = await waitForApi();
   if (!api?.resolve_stream) {
@@ -2610,9 +2723,9 @@ async function openStreamOverlay(anime) {
 
   const overlay = $('#stream-overlay');
   const title = titleOf(anime);
-  $('#stream-title').textContent = title;
-  $('#stream-subtitle').textContent = 'Finding on AnimeHeaven.me...';
-  setStreamStatus('Searching AnimeHeaven...');
+  setText('#stream-title', title);
+  setText('#stream-subtitle', 'Finding free stream…');
+  setStreamStatus('Searching free catalog…');
   overlay?.classList.remove('hidden');
   overlay?.setAttribute('aria-hidden', 'false');
 
@@ -2624,6 +2737,9 @@ async function openStreamOverlay(anime) {
     currentEp: null,
     loading: true,
     error: null,
+    base: null,
+    suggestions: [],
+    altHtml: '',
   };
   renderStreamEpisodes();
 
@@ -2638,28 +2754,21 @@ async function openStreamOverlay(anime) {
   state.stream.loading = false;
 
   if (!resolved?.ok) {
-    setStreamStatus(resolved?.error || 'Show not found on AnimeHeaven.', 'err');
-    $('#stream-subtitle').textContent = 'No match found';
+    setStreamStatus(resolved?.error || 'Show not found for streaming.', 'err');
+    setText('#stream-subtitle', 'No match found');
+    if (resolved?.suggestions?.length) {
+      state.stream.suggestions = resolved.suggestions;
+      state.stream.altHtml = `<div class="stream-alts"><div class="stream-subtitle" style="padding:0.35rem 0;">Try one of these:</div>${
+        resolved.suggestions.slice(0, 6).map((s) =>
+          `<button type="button" class="stream-ep-btn" data-stream-alt="${escapeHtml(s.ah_id)}" data-stream-alt-title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</button>`,
+        ).join('')
+      }</div>`;
+      renderStreamEpisodes();
+    }
     return;
   }
 
-  state.stream.ahId = resolved.ah_id;
-  state.stream.episodes = resolved.episodes || [];
-  state.stream.showUrl = resolved.url || (resolved.ah_id ? `https://animeheaven.me/anime.php?${resolved.ah_id}` : '');
-  state.stream.ahUrl = state.stream.showUrl;
-  $('#stream-title').textContent = resolved.title || title;
-  $('#stream-subtitle').textContent = resolved.title_japanese || 'AnimeHeaven.me (free player)';
-  const ahLink = $('#stream-ah-link');
-  if (ahLink) {
-    ahLink.href = state.stream.showUrl || 'https://animeheaven.me';
-    ahLink.textContent = 'Open full show on AnimeHeaven.me';
-    ahLink.onclick = (e) => {
-      if (getAhPlayer()) {
-        e.preventDefault();
-        openInAppPlayer({ url: state.stream.showUrl, title: resolved.title || title });
-      }
-    };
-  }
+  await applyStreamResolved(resolved, anime);
 
   if (!state.stream.episodes.length) {
     setStreamStatus('Matched show but no episodes listed yet.', 'err');
