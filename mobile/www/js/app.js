@@ -289,37 +289,43 @@ function detailRow(a) {
 }
 
 function cardHtml(a) {
-  const title = escapeHtml(titleOf(a));
-  const sub = a.title_japanese ? escapeHtml(a.title_japanese) : '';
-  const print = isPrintMedia(a);
-  let badge = 'badge-upcoming';
-  let label = 'Upcoming';
-  if (print) {
-    const t = (a.type || a.media || 'Manga').toString();
-    badge = 'badge-print';
-    label = t;
-    if (a.airing || a.publishing) {
+  try {
+    if (!a) return '';
+    const title = escapeHtml(titleOf(a));
+    const sub = a.title_japanese ? escapeHtml(a.title_japanese) : '';
+    const print = isPrintMedia(a);
+    let badge = 'badge-upcoming';
+    let label = 'Upcoming';
+    if (print) {
+      const family = (a.media || a.type || 'Manga').toString();
+      badge = 'badge-print';
+      label = family.charAt(0).toUpperCase() + family.slice(1);
+      if (a.airing || a.publishing) {
+        badge = 'badge-airing';
+        label = 'Publishing';
+      } else if ((a.status || '').toLowerCase().includes('finish') || (a.status || '').toLowerCase().includes('complete')) {
+        badge = 'badge-done';
+        label = 'Finished';
+      }
+    } else if (a.airing) {
       badge = 'badge-airing';
-      label = 'Publishing';
-    } else if ((a.status || '').toLowerCase().includes('finish') || (a.status || '').toLowerCase().includes('complete')) {
-      badge = 'badge-done';
-      label = 'Finished';
+      label = 'Airing';
     }
-  } else if (a.airing) {
-    badge = 'badge-airing';
-    label = 'Airing';
-  }
-  const score = a.score ? `<span class="badge badge-score">★ ${a.score}</span>` : '';
-  const air = a.aired_from ? formatDate(a.aired_from) : 'TBA';
-  const countChip = a.episodes
-    ? `${a.episodes} eps`
-    : (a.chapters ? `${a.chapters} ch` : (a.volumes ? `${a.volumes} vol` : ''));
+    const score = a.score ? `<span class="badge badge-score">★ ${a.score}</span>` : '';
+    const air = a.aired_from ? formatDate(a.aired_from) : 'TBA';
+    const countChip = a.episodes
+      ? `${a.episodes} eps`
+      : (a.chapters ? `${a.chapters} ch` : (a.volumes ? `${a.volumes} vol` : ''));
+    const mediaChip = a.media && a.media !== 'anime'
+      ? `<span class="meta-chip media-chip">${escapeHtml(a.media)}</span>`
+      : '';
+    const href = escapeHtml(a.url || '#');
 
-  return `
+    return `
     <article class="card">
-      <a class="card-link" href="${a.url}" target="_blank" rel="noopener">
+      <a class="card-link" href="${href}" target="_blank" rel="noopener">
         <div class="card-image-wrap">
-          <img class="card-image" src="${a.image || ''}" alt="${title}" loading="lazy">
+          <img class="card-image" src="${escapeHtml(a.image || '')}" alt="${title}" loading="lazy">
           <div class="card-badges">
             <span class="badge ${badge}">${escapeHtml(label)}</span>
             ${score}
@@ -329,6 +335,7 @@ function cardHtml(a) {
           <h3 class="card-title">${title}</h3>
           ${sub ? `<p class="card-sub">${sub}</p>` : ''}
           <div class="card-meta">
+            ${mediaChip}
             ${a.type ? `<span class="meta-chip">${escapeHtml(a.type)}</span>` : ''}
             ${countChip ? `<span class="meta-chip">${escapeHtml(countChip)}</span>` : ''}
             <span class="meta-chip accent">${air}</span>
@@ -338,6 +345,9 @@ function cardHtml(a) {
       <div class="card-track card-actions">${watchButton(a)}${favoriteButton(a)}${completeButton(a)}${trackButton(a)}</div>
     </article>
   `;
+  } catch {
+    return '';
+  }
 }
 
 function renderDaily() {
@@ -903,7 +913,7 @@ async function renderSettings() {
         <h3>About</h3>
         <p class="settings-hint">In-app name: <strong>Grey GodZilla Anime App</strong><br>
         Launcher icon name: <strong>GGZ Anime</strong><br>
-        Version: <strong id="settings-version">v1.5.2</strong></p>
+        Version: <strong id="settings-version">v1.5.3</strong></p>
       </section>
     </div>
   `);
@@ -1189,27 +1199,38 @@ function renderHistory() {
 
 function renderSearchResults() {
   const q = state.search.trim();
-  const media = state.filters.media || 'anime';
+  const media = state.filters.media || 'all';
   if (state.searchLoading) {
-    showLoading(`Searching ${media} via AniList for “${q}”...`);
+    const label = media === 'all' ? 'anime, manga, webtoons & novels' : media;
+    showLoading(`Searching ${label} for “${q}”…`);
     return;
   }
-  const list = state.searchResults || [];
+  const list = (state.searchResults || []).filter(Boolean);
   const src = state.searchSource ? ` · ${escapeHtml(state.searchSource)}` : '';
+  const counts = {};
+  for (const item of list) {
+    const k = item.media || 'other';
+    counts[k] = (counts[k] || 0) + 1;
+  }
+  const breakdown = Object.keys(counts).length
+    ? Object.entries(counts).map(([k, n]) => `${n} ${k}`).join(' · ')
+    : '';
   setSubheader(
-    `<strong>Database search</strong> · ${escapeHtml(media)} · “${escapeHtml(q)}” · ${list.length} results${src}`,
+    `<strong>Search</strong> · ${escapeHtml(media === 'all' ? 'All media' : media)} · “${escapeHtml(q)}” · ${list.length} results`
+    + (breakdown ? ` <span class="muted">(${escapeHtml(breakdown)})</span>` : '')
+    + src,
   );
   setText('#count-search', list.length || '—');
   if (!q || q.length < 2) {
-    showEmpty('Type at least 2 characters, set filters, then press Search or Enter.');
+    showEmpty('Type at least 2 characters. Leave media on “All media” for anime + manga + webtoons + novels.');
     return;
   }
   if (!list.length) {
     if (state.searchError) {
-      showEmpty(`Search hiccuped (${state.searchError}). Tap Search again — filters are optional.`);
+      showEmpty(`Search could not finish (${state.searchError}). Tap Go to retry — try “All media” with Any format.`);
       return;
     }
-    showEmpty(`No ${media} matches for “${q}”. Try All media, clear format filters, or different spelling.`);
+    showEmpty(`No matches for “${q}”. Try All media, clear format/status, or a shorter title.`);
     return;
   }
   showContent(`<div class="grid">${list.map(cardHtml).join('')}</div>`);
@@ -1333,21 +1354,27 @@ function syncFormatFilterOptions() {
   if (!typeSel) return;
   let options;
   if (media === 'anime') options = ANIME_TYPE_OPTIONS;
-  else if (media === 'all') {
+  else if (media === 'novel') {
     options = [
       ['any', 'All formats'],
+      ['novel', 'Novel'],
+      ['lightnovel', 'Light Novel'],
+    ];
+  } else if (media === 'all') {
+    options = [
+      ['any', 'Any format'],
       ...ANIME_TYPE_OPTIONS.filter(([v]) => v !== 'any'),
       ...MANGA_TYPE_OPTIONS.filter(([v]) => v !== 'any'),
     ];
   } else {
+    // manga / manhwa / webtoon / manhua
     options = MANGA_TYPE_OPTIONS;
   }
   const prev = typeSel.value;
   typeSel.innerHTML = options.map(([v, label]) => `<option value="${v}">${label}</option>`).join('');
-  if (options.some(([v]) => v === prev)) {
+  // Always prefer "any" when switching media so filters don't break print searches
+  if (options.some(([v]) => v === prev) && prev !== 'tv' && prev !== 'movie') {
     typeSel.value = prev;
-  } else if (['manhwa', 'webtoon', 'manhua', 'novel'].includes(media) && options.some(([v]) => v === media)) {
-    typeSel.value = media;
   } else {
     typeSel.value = 'any';
   }
@@ -1355,7 +1382,7 @@ function syncFormatFilterOptions() {
   if (statusSel) {
     const airingOpt = statusSel.querySelector('option[value="airing"]');
     if (airingOpt) {
-      airingOpt.textContent = media === 'anime' ? 'Airing' : 'Publishing';
+      airingOpt.textContent = media === 'anime' ? 'Airing' : (media === 'all' ? 'Airing / Publishing' : 'Publishing');
     }
   }
 }
@@ -1373,36 +1400,46 @@ function readSearchFilters() {
 
 let searchDebounceTimer = null;
 
-async function callSearchApi(api, q, filters, opts) {
+async function callSearchApi(api, q, media, opts) {
+  media = String(media || 'all').toLowerCase();
   // Prefer multi-arg search_media; fall back to simpler signatures.
   if (api.search_media) {
     try {
       return await api.search_media(
         q,
-        filters.media,
+        media,
         opts.limit,
         opts.type || '',
         opts.status || '',
-        opts.order_by,
-        opts.sort,
-        opts.min_score,
+        opts.order_by || 'popularity',
+        opts.sort || 'desc',
+        opts.min_score || 0,
       );
-    } catch {
-      /* try simpler below */
+    } catch (err) {
+      // fall through
+      console.warn('search_media failed', err);
     }
   }
-  if (api.search) return api.search(q, filters.media, opts.limit);
-  if (filters.media !== 'anime' && api.search_manga) {
-    return api.search_manga(q, opts.limit, opts.type || filters.media);
+  if (api.search) {
+    try { return await api.search(q, media, opts.limit); } catch { /* */ }
   }
-  if (api.search_anime) return api.search_anime(q, opts.limit);
-  return null;
+  if (media === 'anime' && api.search_anime) {
+    try { return await api.search_anime(q, opts.limit); } catch { /* */ }
+  }
+  if (media !== 'anime' && api.search_manga) {
+    try { return await api.search_manga(q, opts.limit, media); } catch { /* */ }
+  }
+  return { data: [], error: 'search_unavailable', query: q, media };
 }
 
 async function runDatabaseSearch(forceTab = true) {
   const q = ($('#search')?.value || state.search || '').trim();
   state.search = q;
   const filters = readSearchFilters();
+  // Default media to all so non-anime is never accidentally skipped
+  if (!filters.media || filters.media === 'any') filters.media = 'all';
+  state.filters = filters;
+
   if (q.length < 2) {
     state.searchResults = [];
     state.searchError = null;
@@ -1434,84 +1471,71 @@ async function runDatabaseSearch(forceTab = true) {
   setStatus('Searching...', 'loading');
 
   try {
-    // Only force type for country-based media (manhwa/manhua/webtoon).
-    let typeParam = filters.type === 'any' ? null : filters.type;
-    if (!typeParam && ['manhwa', 'webtoon', 'manhua', 'novel'].includes(filters.media)) {
-      typeParam = filters.media;
-    }
+    // Never pass anime-only formats into print-media searches
+    let typeParam = filters.type === 'any' ? '' : (filters.type || '');
+    const animeFormats = new Set(['tv', 'movie', 'ova', 'ona', 'special']);
+    const printFormats = new Set(['manga', 'manhwa', 'manhua', 'webtoon', 'novel', 'one_shot', 'lightnovel', 'oneshot']);
+    if (filters.media === 'anime' && typeParam && !animeFormats.has(typeParam)) typeParam = '';
+    if (filters.media !== 'anime' && filters.media !== 'all' && typeParam && animeFormats.has(typeParam)) typeParam = '';
+    if (filters.media === 'all' && typeParam && !animeFormats.has(typeParam) && !printFormats.has(typeParam)) typeParam = '';
+
     const opts = {
-      limit: 30,
+      limit: 36,
       type: typeParam,
-      status: filters.status === 'any' ? null : filters.status,
-      order_by: filters.order_by,
+      status: filters.status === 'any' ? '' : (filters.status || ''),
+      order_by: filters.order_by || 'popularity',
       sort: sortForOrder(filters.order_by),
       min_score: filters.min_score || 0,
     };
 
-    let result = await callSearchApi(api, q, filters, opts);
+    let result = await callSearchApi(api, q, filters.media, opts);
 
-    // If filtered search fails or returns empty with an error, retry with looser filters.
-    if ((!result?.data?.length) && (result?.error || !result)) {
-      const loose = { ...opts, type: '', status: null, min_score: 0 };
-      const looseFilters = { ...filters, type: 'any', status: 'any', min_score: 0 };
-      result = await callSearchApi(api, q, looseFilters, loose) || result;
+    // Retry loose if empty
+    if (!result?.data?.length) {
+      result = await callSearchApi(api, q, filters.media, {
+        ...opts, type: '', status: '', min_score: 0,
+      }) || result;
     }
 
-    // Last resort: try anime + manga separately if "all" came back empty.
-    if ((!result?.data?.length) && filters.media === 'all' && api.search_media) {
-      const [a, m] = await Promise.all([
-        callSearchApi(api, q, { ...filters, media: 'anime' }, { ...opts, type: '', status: null }),
-        callSearchApi(api, q, { ...filters, media: 'manga' }, { ...opts, type: '', status: null }),
-      ]);
-      const merged = [];
-      const seen = new Set();
-      for (const item of [...(a?.data || []), ...(m?.data || [])]) {
-        const key = item.anilist_id || item.mal_id || item.title;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        merged.push(item);
-      }
-      if (merged.length) {
-        result = {
-          data: merged.slice(0, 40),
-          query: q,
-          media: 'all',
-          source: 'anilist',
-          error: null,
-        };
-      } else {
-        result = result || a || m || { data: [], error: a?.error || m?.error || 'no_results' };
+    // If a single non-anime family failed, try broader manga bucket then all
+    if (!result?.data?.length && filters.media !== 'all' && filters.media !== 'anime') {
+      const mangaPass = await callSearchApi(api, q, 'manga', { ...opts, type: '', status: '', min_score: 0 });
+      if (mangaPass?.data?.length) result = mangaPass;
+      else {
+        const allPass = await callSearchApi(api, q, 'all', { ...opts, type: '', status: '', min_score: 0 });
+        if (allPass?.data?.length) result = allPass;
       }
     }
 
-    // Ignore stale responses if user typed again.
     if (requestId !== state.searchRequestId) return;
 
-    state.searchResults = result?.data || [];
+    state.searchResults = (result?.data || []).filter(Boolean);
     state.searchError = state.searchResults.length ? null : (result?.error || null);
     state.searchSource = result?.source || '';
     state.searchLoading = false;
     if (state.searchError && !state.searchResults.length) {
       setStatus('Search error', '');
-      showToast('Search slow/unavailable — tap Search to retry.', 'err');
+      showToast('Search unavailable — tap Go to retry.', 'err');
     } else {
       setStatus('Ready', 'ready');
       if (!state.searchResults.length) {
         showToast(`No results for “${q}”.`, '');
       } else {
-        showToast(`${state.searchResults.length} result(s)`, 'ok');
+        const kinds = {};
+        state.searchResults.forEach((i) => { kinds[i.media || 'other'] = true; });
+        showToast(`${state.searchResults.length} result(s) · ${Object.keys(kinds).join(', ')}`, 'ok');
       }
     }
     if (state.tab === 'search') renderSearchResults();
   } catch (err) {
     if (requestId !== state.searchRequestId) return;
     state.searchLoading = false;
-    // Never surface raw DOM TypeErrors as the main search failure message
     const raw = err?.message || String(err);
     const friendly = /textContent|null|undefined/i.test(raw)
-      ? 'Search UI glitch fixed on retry — try again.'
+      ? 'Search hit a UI glitch — tap Go to retry.'
       : raw;
     state.searchError = friendly;
+    state.searchResults = [];
     setStatus('Error', '');
     showToast(friendly, 'err');
     if (state.tab === 'search') renderSearchResults();

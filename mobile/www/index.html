@@ -21,7 +21,7 @@
         <div class="brand-text">
           <div class="brand-row">
             <h1>Grey GodZilla Anime App</h1>
-            <span class="version-badge" id="version-badge">v1.5.2</span>
+            <span class="version-badge" id="version-badge">v1.5.3</span>
           </div>
           <p class="brand-sub">Track · Stream · Alerts</p>
         </div>
@@ -37,19 +37,20 @@
             <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
             </svg>
-            <input type="search" id="search" placeholder="Search…" autocomplete="off">
+            <input type="search" id="search" placeholder="Anime, manga, webtoons, novels…" autocomplete="off">
           </div>
           <div class="search-filters" id="search-filters">
             <select id="filter-media" title="Media type" aria-label="Media type">
-              <option value="all" selected>All</option>
+              <option value="all" selected>All media</option>
               <option value="anime">Anime</option>
-              <option value="manga">Manga</option>
+              <option value="manga">Manga / Books</option>
               <option value="manhwa">Manhwa</option>
               <option value="webtoon">Webtoon</option>
               <option value="manhua">Manhua</option>
+              <option value="novel">Novels</option>
             </select>
             <select id="filter-type" title="Format" aria-label="Format">
-              <option value="any">Format</option>
+              <option value="any" selected>Any format</option>
               <option value="tv">TV</option>
               <option value="movie">Movie</option>
               <option value="ova">OVA</option>
@@ -57,8 +58,8 @@
               <option value="special">Special</option>
             </select>
             <select id="filter-status" title="Status" aria-label="Status">
-              <option value="any">Status</option>
-              <option value="airing">Airing</option>
+              <option value="any" selected>Any status</option>
+              <option value="airing">Airing / Publishing</option>
               <option value="complete">Finished</option>
               <option value="upcoming">Upcoming</option>
             </select>
@@ -114,7 +115,7 @@
   </main>
 
   <footer class="footer">
-    <p id="app-version-line"><strong>Grey GodZilla Anime App</strong> · <span id="footer-version">v1.5.2</span></p>
+    <p id="app-version-line"><strong>Grey GodZilla Anime App</strong> · <span id="footer-version">v1.5.3</span></p>
     <p class="updated" id="last-updated"></p>
   </footer>
 
