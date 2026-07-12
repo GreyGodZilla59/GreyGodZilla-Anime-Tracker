@@ -51,6 +51,12 @@ const state = {
 
 const $ = (sel) => document.querySelector(sel);
 
+/** Safe textContent — mobile UI omits many desktop count badges. */
+function setText(sel, val) {
+  const el = typeof sel === 'string' ? $(sel) : sel;
+  if (el) el.textContent = val == null ? '' : String(val);
+}
+
 function getTodayDay() {
   const map = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
   return map[new Date().getDay()];
@@ -90,16 +96,12 @@ function matchesSearch(a, q) {
 function setStatus(text, kind = '') {
   const pill = $('#status-pill');
   const label = $('#status-text');
-  if (label) label.textContent = text;
-  pill.className = `status-pill ${kind}`;
+  setText(label, text);
+  if (pill) pill.className = `status-pill ${kind}`;
 }
 
 function updateStats() {
   // Stats bar removed for a calmer UI — only tab badges remain.
-  const setText = (sel, val) => {
-    const el = $(sel);
-    if (el) el.textContent = val;
-  };
   setText('#count-favorites', state.favorites.length);
   setText('#count-history', state.history.length);
 }
@@ -116,6 +118,7 @@ function noteStale(data, label) {
 
 function setSubheader(html) {
   const el = $('#subheader');
+  if (!el) return;
   if (!html) {
     el.classList.add('hidden');
     el.innerHTML = '';
@@ -126,39 +129,42 @@ function setSubheader(html) {
 }
 
 function showLoading(msg = 'Loading...') {
-  $('#loading').classList.remove('hidden');
-  $('#loading-text').textContent = msg;
-  $('#content').classList.add('hidden');
-  $('#empty').classList.add('hidden');
-  $('#error').classList.add('hidden');
+  $('#loading')?.classList.remove('hidden');
+  setText('#loading-text', msg);
+  $('#content')?.classList.add('hidden');
+  $('#empty')?.classList.add('hidden');
+  $('#error')?.classList.add('hidden');
 }
 
 function hideLoading() {
-  $('#loading').classList.add('hidden');
+  $('#loading')?.classList.add('hidden');
 }
 
 function showError(msg) {
   hideLoading();
-  $('#content').classList.add('hidden');
-  $('#empty').classList.add('hidden');
-  $('#error').classList.remove('hidden');
-  $('#error-message').textContent = msg;
+  $('#content')?.classList.add('hidden');
+  $('#empty')?.classList.add('hidden');
+  $('#error')?.classList.remove('hidden');
+  setText('#error-message', msg);
   setStatus('Error', '');
 }
 
 function showEmpty(msg) {
   hideLoading();
-  $('#content').classList.add('hidden');
-  $('#empty').classList.remove('hidden');
-  $('#empty-message').textContent = msg;
+  $('#content')?.classList.add('hidden');
+  $('#empty')?.classList.remove('hidden');
+  setText('#empty-message', msg);
 }
 
 function showContent(html) {
   hideLoading();
-  $('#empty').classList.add('hidden');
-  $('#error').classList.add('hidden');
-  $('#content').innerHTML = html;
-  $('#content').classList.remove('hidden');
+  $('#empty')?.classList.add('hidden');
+  $('#error')?.classList.add('hidden');
+  const content = $('#content');
+  if (content) {
+    content.innerHTML = html;
+    content.classList.remove('hidden');
+  }
 }
 
 function isTracked(malId) {
@@ -340,8 +346,7 @@ function renderDaily() {
   const day = state.bootstrap?.today_name || getTodayDay();
 
   setSubheader(`<strong>${DAY_LABELS[day] || day}</strong> · ${list.length} shows today`);
-  const cd = $('#count-daily');
-  if (cd) cd.textContent = state.bootstrap?.today?.length ?? '—';
+  setText('#count-daily', state.bootstrap?.today?.length ?? '—');
 
   if (!list.length) {
     showEmpty(q ? 'No matches for your search today.' : 'Nothing scheduled for today in the database.');
@@ -497,7 +502,7 @@ function renderWeekly() {
     + (synced ? ` · synced ${escapeHtml(synced)}` : '')
     + ' · drag column edges to resize',
   );
-  $('#count-weekly').textContent = total || '—';
+  setText('#count-weekly', total || '—');
   showContent(`<div class="week-board">${cols}</div>`);
   bindWeekBoardEvents();
 }
@@ -529,7 +534,7 @@ function renderMonthly() {
     `<strong>${m.month_name} ${m.year}</strong> · ${releaseTotal} episode drops · ${premieres.length} new series`
     + (synced ? ` · synced ${escapeHtml(synced)}` : ''),
   );
-  $('#count-monthly').textContent = monthTotal;
+  setText('#count-monthly', monthTotal);
 
   const dayCells = [];
   for (let d = 1; d <= m.days_in_month; d++) {
@@ -629,7 +634,7 @@ function renderYearly() {
   setSubheader(
     `<strong>${y.year}</strong> releases · ${premieres.length} dated premieres · ${announced.length} announced · auto-refreshes daily`,
   );
-  $('#count-yearly').textContent = yearTotal || y.total || '—';
+  setText('#count-yearly', yearTotal || y.total || '—');
   updateStats();
 
   const quarterCards = ['winter', 'spring', 'summer', 'fall'].map((quarter) => {
@@ -718,8 +723,7 @@ function renderYearly() {
 function renderSeason(which) {
   const q = state.search.trim().toLowerCase();
   const list = (state.bootstrap?.[which] || state.season[which] || []).filter((a) => matchesSearch(a, q));
-  const countEl = $(`#count-${which}`);
-  if (countEl) countEl.textContent = list.length || state.bootstrap?.[which]?.length || '—';
+  setText(`#count-${which}`, list.length || state.bootstrap?.[which]?.length || '—');
 
   const label = which === 'now' ? 'Current season' : 'Next season';
   setSubheader(`<strong>${label}</strong> · ${list.length} shows`);
@@ -899,7 +903,7 @@ async function renderSettings() {
         <h3>About</h3>
         <p class="settings-hint">In-app name: <strong>Grey GodZilla Anime App</strong><br>
         Launcher icon name: <strong>GGZ Anime</strong><br>
-        Version: <strong id="settings-version">v1.5.1</strong></p>
+        Version: <strong id="settings-version">v1.5.2</strong></p>
       </section>
     </div>
   `);
@@ -1041,7 +1045,7 @@ async function loadWebhookData() {
   state.webhook.config = config;
   state.webhook.status = status;
   state.watchlist = watchlist || [];
-  $('#count-webhooks').textContent = state.watchlist.length;
+  setText('#count-webhooks', state.watchlist.length);
 }
 
 async function saveWebhookSettings() {
@@ -1150,7 +1154,7 @@ function renderFavorites() {
   const q = state.search.trim().toLowerCase();
   const list = (state.favorites || []).filter((a) => matchesSearch(a, q));
   setSubheader(`Your <strong>favorites</strong> · ${list.length} saved · star any show to pin it here`);
-  $('#count-favorites').textContent = state.favorites.length;
+  setText('#count-favorites', state.favorites.length);
   updateStats();
   if (!list.length) {
     showEmpty(q ? 'No favorites match your filter.' : 'No favorites yet — hit ☆ Favorite on any show.');
@@ -1163,7 +1167,7 @@ function renderHistory() {
   const q = state.search.trim().toLowerCase();
   const list = (state.history || []).filter((a) => matchesSearch(a, q));
   setSubheader(`Watch <strong>history</strong> · ${list.length} completed · mark shows done as you finish them`);
-  $('#count-history').textContent = state.history.length;
+  setText('#count-history', state.history.length);
   updateStats();
   if (!list.length) {
     showEmpty(q ? 'No history matches your filter.' : 'No completed titles yet — use Mark Done on any show.');
@@ -1195,17 +1199,17 @@ function renderSearchResults() {
   setSubheader(
     `<strong>Database search</strong> · ${escapeHtml(media)} · “${escapeHtml(q)}” · ${list.length} results${src}`,
   );
-  $('#count-search').textContent = list.length || '—';
+  setText('#count-search', list.length || '—');
   if (!q || q.length < 2) {
     showEmpty('Type at least 2 characters, set filters, then press Search or Enter.');
     return;
   }
   if (!list.length) {
     if (state.searchError) {
-      showEmpty(`Search failed: ${state.searchError}. Try again in a moment.`);
+      showEmpty(`Search hiccuped (${state.searchError}). Tap Search again — filters are optional.`);
       return;
     }
-    showEmpty(`No ${media} matches for “${q}”. Try different filters or spelling.`);
+    showEmpty(`No ${media} matches for “${q}”. Try All media, clear format filters, or different spelling.`);
     return;
   }
   showContent(`<div class="grid">${list.map(cardHtml).join('')}</div>`);
@@ -1369,6 +1373,32 @@ function readSearchFilters() {
 
 let searchDebounceTimer = null;
 
+async function callSearchApi(api, q, filters, opts) {
+  // Prefer multi-arg search_media; fall back to simpler signatures.
+  if (api.search_media) {
+    try {
+      return await api.search_media(
+        q,
+        filters.media,
+        opts.limit,
+        opts.type || '',
+        opts.status || '',
+        opts.order_by,
+        opts.sort,
+        opts.min_score,
+      );
+    } catch {
+      /* try simpler below */
+    }
+  }
+  if (api.search) return api.search(q, filters.media, opts.limit);
+  if (filters.media !== 'anime' && api.search_manga) {
+    return api.search_manga(q, opts.limit, opts.type || filters.media);
+  }
+  if (api.search_anime) return api.search_anime(q, opts.limit);
+  return null;
+}
+
 async function runDatabaseSearch(forceTab = true) {
   const q = ($('#search')?.value || state.search || '').trim();
   state.search = q;
@@ -1410,78 +1440,92 @@ async function runDatabaseSearch(forceTab = true) {
       typeParam = filters.media;
     }
     const opts = {
-      limit: 24,
+      limit: 30,
       type: typeParam,
       status: filters.status === 'any' ? null : filters.status,
       order_by: filters.order_by,
       sort: sortForOrder(filters.order_by),
       min_score: filters.min_score || 0,
     };
-    let result;
-    // Prefer simple arity first — pywebview is picky with many null args.
-    if (api.search_media) {
-      try {
-        result = await api.search_media(
-          q,
-          filters.media,
-          opts.limit,
-          opts.type || '',
-          opts.status || '',
-          opts.order_by,
-          opts.sort,
-          opts.min_score,
-        );
-      } catch (inner) {
-        // Fallback: 2-arg simple search
-        result = api.search
-          ? await api.search(q, filters.media, opts.limit)
-          : null;
-        if (!result) throw inner;
+
+    let result = await callSearchApi(api, q, filters, opts);
+
+    // If filtered search fails or returns empty with an error, retry with looser filters.
+    if ((!result?.data?.length) && (result?.error || !result)) {
+      const loose = { ...opts, type: '', status: null, min_score: 0 };
+      const looseFilters = { ...filters, type: 'any', status: 'any', min_score: 0 };
+      result = await callSearchApi(api, q, looseFilters, loose) || result;
+    }
+
+    // Last resort: try anime + manga separately if "all" came back empty.
+    if ((!result?.data?.length) && filters.media === 'all' && api.search_media) {
+      const [a, m] = await Promise.all([
+        callSearchApi(api, q, { ...filters, media: 'anime' }, { ...opts, type: '', status: null }),
+        callSearchApi(api, q, { ...filters, media: 'manga' }, { ...opts, type: '', status: null }),
+      ]);
+      const merged = [];
+      const seen = new Set();
+      for (const item of [...(a?.data || []), ...(m?.data || [])]) {
+        const key = item.anilist_id || item.mal_id || item.title;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(item);
       }
-    } else if (api.search) {
-      result = await api.search(q, filters.media, opts.limit);
-    } else if (filters.media !== 'anime' && api.search_manga) {
-      result = await api.search_manga(q, opts.limit, opts.type || filters.media);
-    } else {
-      result = await api.search_anime(q, opts.limit);
+      if (merged.length) {
+        result = {
+          data: merged.slice(0, 40),
+          query: q,
+          media: 'all',
+          source: 'anilist',
+          error: null,
+        };
+      } else {
+        result = result || a || m || { data: [], error: a?.error || m?.error || 'no_results' };
+      }
     }
 
     // Ignore stale responses if user typed again.
     if (requestId !== state.searchRequestId) return;
 
     state.searchResults = result?.data || [];
-    state.searchError = result?.error || null;
+    state.searchError = state.searchResults.length ? null : (result?.error || null);
     state.searchSource = result?.source || '';
     state.searchLoading = false;
     if (state.searchError && !state.searchResults.length) {
       setStatus('Search error', '');
-      showToast(`Search failed: ${state.searchError}`, 'err');
+      showToast('Search slow/unavailable — tap Search to retry.', 'err');
     } else {
       setStatus('Ready', 'ready');
       if (!state.searchResults.length) {
         showToast(`No results for “${q}”.`, '');
+      } else {
+        showToast(`${state.searchResults.length} result(s)`, 'ok');
       }
     }
     if (state.tab === 'search') renderSearchResults();
   } catch (err) {
     if (requestId !== state.searchRequestId) return;
     state.searchLoading = false;
-    state.searchError = err.message || String(err);
+    // Never surface raw DOM TypeErrors as the main search failure message
+    const raw = err?.message || String(err);
+    const friendly = /textContent|null|undefined/i.test(raw)
+      ? 'Search UI glitch fixed on retry — try again.'
+      : raw;
+    state.searchError = friendly;
     setStatus('Error', '');
-    showToast(state.searchError || 'Search failed.', 'err');
-    if (state.tab === 'search') {
-      showError(state.searchError || 'Search failed. Check your connection and try again.');
-    }
+    showToast(friendly, 'err');
+    if (state.tab === 'search') renderSearchResults();
   }
 }
 
 function scheduleDatabaseSearch() {
   clearTimeout(searchDebounceTimer);
+  // Slightly longer debounce on mobile so mid-typing requests don't stack
   searchDebounceTimer = setTimeout(() => {
     if ((state.search || '').trim().length >= 2 && state.tab === 'search') {
       runDatabaseSearch(false);
     }
-  }, 450);
+  }, 650);
 }
 
 async function openMonthDetail(year, month, focusDay = null) {
@@ -1554,12 +1598,12 @@ async function loadBootstrap() {
   state.loaded.add('now');
   state.loaded.add('upcoming');
 
-  $('#count-now').textContent = data.now?.length ?? 0;
-  $('#count-upcoming').textContent = data.upcoming?.length ?? 0;
-  $('#count-daily').textContent = data.today?.length ?? 0;
-  $('#last-updated').textContent = data.stale
+  setText('#count-now', data.now?.length ?? 0);
+  setText('#count-upcoming', data.upcoming?.length ?? 0);
+  setText('#count-daily', data.today?.length ?? 0);
+  setText('#last-updated', data.stale
     ? `Cached: ${new Date().toLocaleString()}`
-    : `Updated: ${new Date().toLocaleString()}`;
+    : `Updated: ${new Date().toLocaleString()}`);
   updateStats();
 
   const hasAny = (data.now?.length || 0) + (data.today?.length || 0) + (data.upcoming?.length || 0);
@@ -1593,7 +1637,7 @@ async function loadWeeklyBackground(force = false) {
     }
     state.weekly = data;
     state.loaded.add('weekly');
-    $('#count-weekly').textContent = total;
+    setText('#count-weekly', total);
     updateStats();
     noteStale(data, 'Week');
     if (state.tab === 'weekly') render();
@@ -1624,7 +1668,7 @@ async function loadMonthlyBackground(force = false) {
     }
     state.monthly = data;
     state.loaded.add('monthly');
-    $('#count-monthly').textContent = count;
+    setText('#count-monthly', count);
     updateStats();
     noteStale(data, 'Month');
     if (state.tab === 'monthly') render();
@@ -1652,7 +1696,7 @@ async function loadYearlyBackground(force = false) {
     }
     state.yearly = data;
     state.loaded.add('yearly');
-    $('#count-yearly').textContent = total || data.total || '—';
+    setText('#count-yearly', total || data.total || '—');
     updateStats();
     noteStale(data, 'Year');
     if (state.tab === 'yearly') render();
@@ -1690,7 +1734,7 @@ async function forceRefreshAll() {
     state.loaded.add('upcoming');
     if (state.weekly) state.loaded.add('weekly');
     if (state.monthly) state.loaded.add('monthly');
-    $('#last-updated').textContent = `Updated: ${new Date().toLocaleString()}`;
+    setText('#last-updated', `Updated: ${new Date().toLocaleString()}`);
     state.refreshDate = result.today || null;
     updateStats();
     // Fill anything not returned by the refresh call.

@@ -6,7 +6,7 @@
   'use strict';
 
   const APP_NAME = 'Grey GodZilla Anime Tracker';
-  const APP_VERSION = '1.5.1';
+  const APP_VERSION = '1.5.2';
   const APP_PUBLISHER = 'Grey GodZilla';
   const ANILIST_URL = 'https://graphql.anilist.co';
   const AH_BASE = 'https://animeheaven.me';
@@ -906,36 +906,46 @@ fragment MediaFields on Media {
       if (['any', 'everything', '*'].includes(media)) media = 'all';
       if (query.length < 2) return { data: [], query, media, source: 'anilist' };
 
-      // Search both anime + manga (includes manhwa/manhua)
+      // Search both anime + manga (includes manhwa/manhua) — sequential if parallel fails
       if (media === 'all') {
-        const half = Math.max(8, Math.min(24, Math.floor((Number(limit) || 24) / 2) + 2));
+        const half = Math.max(10, Math.min(30, Math.floor((Number(limit) || 30) / 2) + 4));
         const animeType = ['tv', 'movie', 'ova', 'ona', 'special'].includes(String(type || '').toLowerCase()) ? type : '';
         const mangaType = ['manga', 'manhwa', 'manhua', 'webtoon', 'novel', 'one_shot', 'lightnovel'].includes(String(type || '').toLowerCase()) ? type : '';
-        const [animeRes, mangaRes] = await Promise.all([
-          this.search_media(query, 'anime', half, animeType, status, orderBy, sort, minScore),
-          this.search_media(query, 'manga', half, mangaType, status, orderBy, sort, minScore),
-        ]);
+        let animeRes;
+        let mangaRes;
+        try {
+          [animeRes, mangaRes] = await Promise.all([
+            this.search_media(query, 'anime', half, animeType, status, orderBy, sort, minScore),
+            this.search_media(query, 'manga', half, mangaType, status, orderBy, sort, minScore),
+          ]);
+        } catch {
+          animeRes = await this.search_media(query, 'anime', half, animeType, status, orderBy, sort, minScore);
+          mangaRes = await this.search_media(query, 'manga', half, mangaType, status, orderBy, sort, minScore);
+        }
         const merged = [];
         const seen = new Set();
-        for (const item of [...(animeRes.data || []), ...(mangaRes.data || [])]) {
+        for (const item of [...(animeRes?.data || []), ...(mangaRes?.data || [])]) {
           const key = item.anilist_id || item.mal_id || item.title;
           if (seen.has(key)) continue;
           seen.add(key);
           merged.push(item);
         }
         merged.sort((a, b) => (b.score || 0) - (a.score || 0) || (b.popularity || 0) - (a.popularity || 0));
+        const combinedError = (!merged.length)
+          ? (animeRes?.error || mangaRes?.error || null)
+          : null;
         return {
-          data: merged.slice(0, Math.min(50, Number(limit) || 24)),
+          data: merged.slice(0, Math.min(50, Number(limit) || 30)),
           query,
           media: 'all',
           source: 'anilist',
-          error: (!animeRes.data || !animeRes.data.length) ? (animeRes.error || mangaRes.error) : null,
+          error: combinedError,
         };
       }
 
-      const cacheKey = `search:${media}:${query}:${type}:${status}:${orderBy}:${limit}`;
+      const cacheKey = `search:${media}:${query}:${type || ''}:${status || ''}:${orderBy}:${limit}:${minScore || 0}`;
       const cached = cacheGet(cacheKey);
-      if (cached) return cached;
+      if (cached && Array.isArray(cached.data) && cached.data.length) return cached;
 
       const isAnime = media === 'anime';
       const mediaType = isAnime ? 'ANIME' : 'MANGA';
@@ -959,39 +969,78 @@ fragment MediaFields on Media {
         upcoming: 'NOT_YET_RELEASED',
       };
       const statusFilter = statusMap[String(status || '').toLowerCase()] || null;
-      const sortList = ['SEARCH_MATCH', orderBy === 'score' ? 'SCORE_DESC' : orderBy === 'title' ? 'TITLE_ROMAJI' : orderBy === 'start_date' ? 'START_DATE_DESC' : 'POPULARITY_DESC'];
+      const sortList = [
+        'SEARCH_MATCH',
+        orderBy === 'score' ? 'SCORE_DESC'
+          : orderBy === 'title' ? 'TITLE_ROMAJI'
+            : orderBy === 'start_date' ? 'START_DATE_DESC'
+              : 'POPULARITY_DESC',
+      ];
 
-      const queryGql = MEDIA_FRAGMENT + `
-        query ($search: String, $type: MediaType, $perPage: Int, $sort: [MediaSort], $format: MediaFormat, $status: MediaStatus, $countryOfOrigin: CountryCode, $isAdult: Boolean) {
-          Page(page: 1, perPage: $perPage) {
-            media(search: $search, type: $type, sort: $sort, format: $format, status: $status, countryOfOrigin: $countryOfOrigin, isAdult: $isAdult) {
-              ...MediaFields
+      async function runSearchQuery(vars) {
+        const queryGql = MEDIA_FRAGMENT + `
+          query ($search: String, $type: MediaType, $perPage: Int, $sort: [MediaSort], $format: MediaFormat, $status: MediaStatus, $countryOfOrigin: CountryCode, $isAdult: Boolean) {
+            Page(page: 1, perPage: $perPage) {
+              media(search: $search, type: $type, sort: $sort, format: $format, status: $status, countryOfOrigin: $countryOfOrigin, isAdult: $isAdult) {
+                ...MediaFields
+              }
             }
-          }
-        }`;
-      const variables = {
+          }`;
+        return gql(queryGql, vars);
+      }
+
+      const baseVars = {
         search: query,
         type: mediaType,
-        perPage: Math.min(50, Math.max(1, Number(limit) || 24)),
+        perPage: Math.min(50, Math.max(1, Number(limit) || 30)),
         sort: sortList,
         isAdult: false,
       };
-      if (format) variables.format = format;
-      if (statusFilter) variables.status = statusFilter;
-      if (country) variables.countryOfOrigin = country;
+      if (format) baseVars.format = format;
+      if (statusFilter) baseVars.status = statusFilter;
+      if (country) baseVars.countryOfOrigin = country;
 
-      const payload = await gql(queryGql, variables);
+      let payload = await runSearchQuery(baseVars);
       let data = ((payload.data && payload.data.Page && payload.data.Page.media) || []).map(slimMedia);
+
+      // If filters produced nothing (or hard error), retry with only search + type
+      if ((!data.length) && (format || statusFilter || country || payload.error)) {
+        const looseVars = {
+          search: query,
+          type: mediaType,
+          perPage: baseVars.perPage,
+          sort: ['SEARCH_MATCH', 'POPULARITY_DESC'],
+          isAdult: false,
+        };
+        if (country && !format && !statusFilter) {
+          // keep country for manhwa/manhua specificity
+          looseVars.countryOfOrigin = country;
+        }
+        const loose = await runSearchQuery(looseVars);
+        const looseData = ((loose.data && loose.data.Page && loose.data.Page.media) || []).map(slimMedia);
+        if (looseData.length || !payload.error) {
+          payload = loose;
+          data = looseData;
+        }
+      }
+
       const minS = Number(minScore) || 0;
       if (minS > 0) data = data.filter((d) => (d.score || 0) >= minS);
       const result = {
         data,
-        error: payload.error,
+        error: data.length ? null : (payload.error || null),
         query,
         media,
         source: 'anilist',
       };
-      cacheSet(cacheKey, result);
+      // Only cache successful non-empty results so failures don't stick
+      if (data.length) cacheSet(cacheKey, result);
+      else {
+        const stale = cacheGetStale(cacheKey);
+        if (stale && stale.data && stale.data.length) {
+          return { ...stale, error: result.error || 'stale_cache', stale: true };
+        }
+      }
       return result;
     },
 
