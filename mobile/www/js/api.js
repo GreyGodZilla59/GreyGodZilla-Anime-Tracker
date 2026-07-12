@@ -6,14 +6,14 @@
   'use strict';
 
   const APP_NAME = 'Grey GodZilla Anime Tracker';
-  const APP_VERSION = '1.6.2';
+  const APP_VERSION = '1.8.0';
   const APP_PUBLISHER = 'Grey GodZilla';
   const ANILIST_URL = 'https://graphql.anilist.co';
   const AH_BASES = ['https://animeheaven.me', 'https://animeheaven.ru'];
   const AH_BASE = AH_BASES[0];
   // Free public reading catalog (manga / manhwa / webtoons / novels)
   const MD_API = 'https://api.mangadex.org';
-  const MD_UA = 'GreyGodZillaAnimeApp/1.6.2 (free personal reader; github.com/GreyGodZilla59)';
+  const MD_UA = 'GreyGodZillaAnimeApp/1.8.0 (free personal reader; github.com/GreyGodZilla59)';
   const AH_UA = 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36';
   const HTTP_TIMEOUT_MS = 25000;
   const GQL_MAX_ATTEMPTS = 4;
@@ -47,6 +47,7 @@ fragment MediaFields on Media {
     webhook: 'gg_webhook_v1',
     webhookState: 'gg_webhook_state_v1',
     notify: 'gg_notify_settings_v1',
+    chapterCache: 'gg_chapter_cache_v1',
   };
 
   const DEFAULT_NOTIFY = {
@@ -513,16 +514,62 @@ fragment MediaFields on Media {
 
   // ---------- Library ----------
   function defaultLibrary() {
-    return { favorites: [], history: [], progress: {}, read_progress: {} };
+    return { favorites: [], history: [], watching: [], progress: {}, read_progress: {} };
   }
 
   function getLibrary() {
     const lib = loadJSON(LS.library, defaultLibrary());
     if (!Array.isArray(lib.favorites)) lib.favorites = [];
     if (!Array.isArray(lib.history)) lib.history = [];
+    if (!Array.isArray(lib.watching)) lib.watching = [];
     if (!lib.progress || typeof lib.progress !== 'object') lib.progress = {};
     if (!lib.read_progress || typeof lib.read_progress !== 'object') lib.read_progress = {};
     return lib;
+  }
+
+  function getChapterCache() {
+    const raw = loadJSON(LS.chapterCache, { chapters: {} });
+    if (!raw.chapters || typeof raw.chapters !== 'object') raw.chapters = {};
+    return raw;
+  }
+
+  function saveChapterCache(cache) {
+    // Cap cached chapters (URL lists only — small)
+    const keys = Object.keys(cache.chapters || {});
+    if (keys.length > 24) {
+      keys
+        .map((k) => ({ k, t: cache.chapters[k]?.cached_at || '' }))
+        .sort((a, b) => String(a.t).localeCompare(String(b.t)))
+        .slice(0, keys.length - 18)
+        .forEach(({ k }) => delete cache.chapters[k]);
+    }
+    saveJSON(LS.chapterCache, cache);
+  }
+
+  async function prefetchPagesToCache(pages) {
+    if (!global.caches || !pages || !pages.length) return 0;
+    try {
+      const cache = await caches.open('ggz-reader-pages-v1');
+      let n = 0;
+      // Prefetch first 12 pages so commute reading works
+      for (const p of pages.slice(0, 12)) {
+        if (!p?.url) continue;
+        try {
+          const hit = await cache.match(p.url);
+          if (hit) {
+            n += 1;
+            continue;
+          }
+          const res = await fetch(p.url, { mode: 'no-cors', credentials: 'omit', referrerPolicy: 'no-referrer' });
+          // opaque responses still cache under no-cors
+          await cache.put(p.url, res);
+          n += 1;
+        } catch { /* skip page */ }
+      }
+      return n;
+    } catch {
+      return 0;
+    }
   }
 
   async function mdGet(path, params) {
@@ -1484,17 +1531,45 @@ fragment MediaFields on Media {
       const entry = slimEntry(item);
       if (!entry) return { ok: false, error: 'Missing media id' };
       lib.history = lib.history.filter((h) => Number(h.mal_id) !== entry.mal_id);
+      // Completed titles leave the Watching list
+      lib.watching = (lib.watching || []).filter((w) => Number(w.mal_id) !== entry.mal_id);
       entry.completed_at = new Date().toISOString();
       if (note) entry.note = String(note).slice(0, 200);
       lib.history = [entry, ...lib.history];
       saveLibrary(lib);
-      return { ok: true, history: lib.history };
+      return { ok: true, history: lib.history, watching: lib.watching };
     },
     async remove_from_history(malId) {
       const lib = getLibrary();
       lib.history = lib.history.filter((h) => Number(h.mal_id) !== Number(malId));
       saveLibrary(lib);
       return { ok: true, history: lib.history };
+    },
+    async get_watching() {
+      return getLibrary().watching || [];
+    },
+    async toggle_watching(item) {
+      const lib = getLibrary();
+      const entry = slimEntry(item);
+      if (!entry) return { ok: false, error: 'Missing media id' };
+      const exists = (lib.watching || []).some((w) => Number(w.mal_id) === entry.mal_id);
+      if (exists) {
+        lib.watching = lib.watching.filter((w) => Number(w.mal_id) !== entry.mal_id);
+        saveLibrary(lib);
+        return { ok: true, watching_status: false, watching: lib.watching };
+      }
+      entry.watching_at = new Date().toISOString();
+      lib.watching = [entry, ...(lib.watching || [])];
+      // If it was marked done, clear finished so it is "watching" again
+      lib.history = (lib.history || []).filter((h) => Number(h.mal_id) !== entry.mal_id);
+      saveLibrary(lib);
+      return { ok: true, watching_status: true, watching: lib.watching, history: lib.history };
+    },
+    async remove_from_watching(malId) {
+      const lib = getLibrary();
+      lib.watching = (lib.watching || []).filter((w) => Number(w.mal_id) !== Number(malId));
+      saveLibrary(lib);
+      return { ok: true, watching: lib.watching };
     },
     async get_watch_progress(malId, episode) {
       const lib = getLibrary();
@@ -1513,13 +1588,17 @@ fragment MediaFields on Media {
       if (!entries.length) return {};
       return entries.sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')))[0] || {};
     },
-    async save_watch_progress(malId, episode, seconds, duration, title) {
+    async set_watch_progress(malId, episode, seconds, duration, title, meta) {
+      return this.save_watch_progress(malId, episode, seconds, duration, title, meta);
+    },
+    async save_watch_progress(malId, episode, seconds, duration, title, meta) {
       malId = Number(malId);
       episode = Number(episode);
       seconds = Math.max(0, Number(seconds) || 0);
       duration = Number(duration) || 0;
       if (!malId || episode < 0) return { ok: false, error: 'Invalid' };
-      if (seconds < 5) return { ok: true, skipped: true };
+      // Allow second=1 markers from "started episode" so Continue Watching populates
+      if (seconds < 5 && seconds !== 1) return { ok: true, skipped: true };
       const lib = getLibrary();
       const key = `${malId}:${episode}`;
       if (duration > 30 && seconds >= duration - 15) {
@@ -1527,12 +1606,15 @@ fragment MediaFields on Media {
         saveLibrary(lib);
         return { ok: true, cleared: true, near_end: true };
       }
+      const image = (meta && meta.image) || null;
       lib.progress[key] = {
         mal_id: malId,
         episode,
         seconds: Math.round(seconds * 100) / 100,
         duration: duration || null,
-        title: title || null,
+        title: title || (meta && meta.title) || null,
+        image: image || lib.progress[key]?.image || null,
+        media: (meta && meta.media) || 'anime',
         updated_at: new Date().toISOString(),
       };
       saveLibrary(lib);
@@ -1551,12 +1633,174 @@ fragment MediaFields on Media {
       saveLibrary(lib);
       return { ok: true };
     },
+    /** Latest in-progress anime episodes (Continue Watching). */
+    async get_continue_watching(limit = 8) {
+      const lib = getLibrary();
+      const byId = new Map();
+      Object.values(lib.progress || {}).forEach((p) => {
+        if (!p || !p.mal_id) return;
+        const id = Number(p.mal_id);
+        const prev = byId.get(id);
+        if (!prev || String(p.updated_at || '') > String(prev.updated_at || '')) {
+          byId.set(id, p);
+        }
+      });
+      const pools = [...(lib.watching || []), ...(lib.favorites || []), ...(lib.history || [])];
+      const rows = [...byId.values()]
+        .sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')))
+        .slice(0, Math.max(1, Math.min(20, Number(limit) || 8)))
+        .map((p) => {
+          const meta = pools.find((x) => Number(x.mal_id) === Number(p.mal_id)) || {};
+          return {
+            mal_id: Number(p.mal_id),
+            title: p.title || meta.title_english || meta.title || 'Continue watching',
+            image: p.image || meta.image || '',
+            episode: p.episode,
+            seconds: p.seconds || 0,
+            duration: p.duration || null,
+            media: p.media || meta.media || 'anime',
+            updated_at: p.updated_at,
+            url: meta.url || '',
+          };
+        });
+      return rows;
+    },
+    /** Latest manga/manhwa chapters (Continue Reading). */
+    async get_continue_reading(limit = 8) {
+      const lib = getLibrary();
+      const pools = [...(lib.watching || []), ...(lib.favorites || []), ...(lib.history || [])];
+      const rows = Object.values(lib.read_progress || {})
+        .filter((p) => p && p.md_id)
+        .sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')))
+        .slice(0, Math.max(1, Math.min(20, Number(limit) || 8)))
+        .map((p) => {
+          const meta = pools.find((x) => String(x.md_id || x.mal_id) === String(p.md_id)) || {};
+          return {
+            md_id: p.md_id,
+            mal_id: meta.mal_id || null,
+            title: meta.title_english || meta.title || p.title || 'Continue reading',
+            image: meta.image || p.image || '',
+            chapter_id: p.chapter_id,
+            chapter: p.chapter,
+            page: p.page || 1,
+            media: meta.media || 'manga',
+            updated_at: p.updated_at,
+          };
+        });
+      return rows;
+    },
+    async export_library() {
+      const lib = getLibrary();
+      const payload = {
+        format: 'ggz-library',
+        version: 2,
+        app_version: APP_VERSION,
+        exported_at: new Date().toISOString(),
+        library: {
+          favorites: lib.favorites || [],
+          history: lib.history || [],
+          watching: lib.watching || [],
+          progress: lib.progress || {},
+          read_progress: lib.read_progress || {},
+        },
+        webhook: loadJSON(LS.webhook, {}),
+        webhookState: loadJSON(LS.webhookState, { watchlist: [], tracked: {}, log: [] }),
+        notify: getNotifySettings(),
+      };
+      return {
+        ok: true,
+        json: JSON.stringify(payload, null, 2),
+        filename: `ggz-library-backup-${todayKey()}.json`,
+        counts: {
+          favorites: (lib.favorites || []).length,
+          history: (lib.history || []).length,
+          watching: (lib.watching || []).length,
+          progress: Object.keys(lib.progress || {}).length,
+          read_progress: Object.keys(lib.read_progress || {}).length,
+        },
+      };
+    },
+    async import_library(jsonText, { merge = true } = {}) {
+      let data;
+      try {
+        data = typeof jsonText === 'string' ? JSON.parse(jsonText) : jsonText;
+      } catch (e) {
+        return { ok: false, error: 'Invalid JSON backup file' };
+      }
+      if (!data || typeof data !== 'object') return { ok: false, error: 'Empty backup' };
+      const incoming = data.library || data;
+      const cur = getLibrary();
+      const mergeList = (a, b) => {
+        const map = new Map();
+        [...(a || []), ...(b || [])].forEach((item) => {
+          if (!item || item.mal_id == null) return;
+          map.set(Number(item.mal_id), item);
+        });
+        return [...map.values()];
+      };
+      if (merge) {
+        cur.favorites = mergeList(cur.favorites, incoming.favorites);
+        cur.history = mergeList(cur.history, incoming.history);
+        cur.watching = mergeList(cur.watching, incoming.watching);
+        cur.progress = { ...(cur.progress || {}), ...(incoming.progress || {}) };
+        cur.read_progress = { ...(cur.read_progress || {}), ...(incoming.read_progress || {}) };
+      } else {
+        cur.favorites = Array.isArray(incoming.favorites) ? incoming.favorites : [];
+        cur.history = Array.isArray(incoming.history) ? incoming.history : [];
+        cur.watching = Array.isArray(incoming.watching) ? incoming.watching : [];
+        cur.progress = incoming.progress && typeof incoming.progress === 'object' ? incoming.progress : {};
+        cur.read_progress = incoming.read_progress && typeof incoming.read_progress === 'object' ? incoming.read_progress : {};
+      }
+      saveLibrary(cur);
+      if (data.notify && typeof data.notify === 'object') {
+        saveNotifySettings(data.notify);
+      }
+      if (data.webhook && typeof data.webhook === 'object') {
+        saveJSON(LS.webhook, data.webhook);
+      }
+      if (data.webhookState && typeof data.webhookState === 'object') {
+        saveJSON(LS.webhookState, data.webhookState);
+      }
+      return {
+        ok: true,
+        merged: !!merge,
+        counts: {
+          favorites: cur.favorites.length,
+          history: cur.history.length,
+          watching: cur.watching.length,
+          progress: Object.keys(cur.progress).length,
+          read_progress: Object.keys(cur.read_progress).length,
+        },
+      };
+    },
+    async get_today_widget_lines(limit = 5) {
+      try {
+        const boot = await this.get_bootstrap(false);
+        const list = (boot && boot.today) || [];
+        const lines = list.slice(0, limit).map((a) => {
+          const t = a.title_english || a.title || 'Anime';
+          const ep = a.next_episode ? `Ep ${a.next_episode}` : (a.broadcast_time ? a.broadcast_time : 'Today');
+          return `${t} · ${ep}`;
+        });
+        return {
+          ok: true,
+          title: `Today · ${list.length} drop${list.length === 1 ? '' : 's'}`,
+          lines,
+          count: list.length,
+          updated_at: new Date().toISOString(),
+        };
+      } catch (e) {
+        return { ok: false, error: String(e.message || e), lines: [], title: 'GGZ Anime', count: 0 };
+      }
+    },
     async get_library_summary() {
       const lib = getLibrary();
       return {
         favorites_count: lib.favorites.length,
         history_count: lib.history.length,
+        watching_count: (lib.watching || []).length,
         progress_count: Object.keys(lib.progress).length,
+        read_progress_count: Object.keys(lib.read_progress || {}).length,
       };
     },
 
@@ -1944,9 +2188,25 @@ fragment MediaFields on Media {
       }
     },
 
-    async get_reader_pages(chapterId, { dataSaver = true } = {}) {
+    async get_reader_pages(chapterId, { dataSaver = true, offlineOnly = false } = {}) {
       chapterId = String(chapterId || '').trim();
       if (!chapterId) return { ok: false, error: 'Missing chapter id', pages: [] };
+
+      const cache = getChapterCache();
+      const cached = cache.chapters[chapterId];
+
+      if (offlineOnly && cached?.pages?.length) {
+        return {
+          ok: true,
+          chapter_id: chapterId,
+          pages: cached.pages,
+          page_count: cached.pages.length,
+          data_saver: !!cached.data_saver,
+          source: 'offline-cache',
+          offline: true,
+        };
+      }
+
       try {
         const url = `${MD_API}/at-home/server/${encodeURIComponent(chapterId)}?forcePort443=true`;
         const res = await httpRequest(url, {
@@ -1956,11 +2216,33 @@ fragment MediaFields on Media {
           timeoutMs: 28000,
         });
         if (!res.ok) {
+          if (cached?.pages?.length) {
+            return {
+              ok: true,
+              chapter_id: chapterId,
+              pages: cached.pages,
+              page_count: cached.pages.length,
+              data_saver: !!cached.data_saver,
+              source: 'offline-cache',
+              offline: true,
+              stale: true,
+            };
+          }
           return { ok: false, error: `Chapter pages unavailable (HTTP ${res.status})`, pages: [] };
         }
         const json = await res.json();
         if (json.result === 'error') {
           const detail = (json.errors && json.errors[0] && json.errors[0].detail) || 'Chapter not hostable';
+          if (cached?.pages?.length) {
+            return {
+              ok: true,
+              chapter_id: chapterId,
+              pages: cached.pages,
+              page_count: cached.pages.length,
+              source: 'offline-cache',
+              offline: true,
+            };
+          }
           return { ok: false, error: String(detail), pages: [] };
         }
         const baseUrl = json.baseUrl;
@@ -1971,6 +2253,16 @@ fragment MediaFields on Media {
         const useSaver = dataSaver && saver.length;
         const files = useSaver ? saver : (full.length ? full : saver);
         if (!baseUrl || !hash || !files.length) {
+          if (cached?.pages?.length) {
+            return {
+              ok: true,
+              chapter_id: chapterId,
+              pages: cached.pages,
+              page_count: cached.pages.length,
+              source: 'offline-cache',
+              offline: true,
+            };
+          }
           return { ok: false, error: 'No page images for this chapter (may be licensed/external only)', pages: [] };
         }
         const quality = useSaver ? 'data-saver' : 'data';
@@ -1978,6 +2270,16 @@ fragment MediaFields on Media {
           index: i + 1,
           url: `${baseUrl}/${quality}/${hash}/${file}`,
         }));
+        // Persist URL list for offline re-open + prefetch first pages
+        cache.chapters[chapterId] = {
+          chapter_id: chapterId,
+          pages,
+          data_saver: quality === 'data-saver',
+          cached_at: new Date().toISOString(),
+        };
+        saveChapterCache(cache);
+        // Fire-and-forget image warm
+        prefetchPagesToCache(pages).catch(() => {});
         return {
           ok: true,
           chapter_id: chapterId,
@@ -1985,10 +2287,40 @@ fragment MediaFields on Media {
           page_count: pages.length,
           data_saver: quality === 'data-saver',
           source: 'mangadex',
+          offline_cached: true,
         };
       } catch (e) {
+        if (cached?.pages?.length) {
+          return {
+            ok: true,
+            chapter_id: chapterId,
+            pages: cached.pages,
+            page_count: cached.pages.length,
+            data_saver: !!cached.data_saver,
+            source: 'offline-cache',
+            offline: true,
+            error_live: String(e.message || e),
+          };
+        }
         return { ok: false, error: String(e.message || e), pages: [] };
       }
+    },
+
+    async get_cached_chapters() {
+      const cache = getChapterCache();
+      return Object.keys(cache.chapters || {}).map((id) => ({
+        chapter_id: id,
+        page_count: (cache.chapters[id].pages || []).length,
+        cached_at: cache.chapters[id].cached_at,
+      }));
+    },
+
+    async clear_chapter_cache() {
+      saveJSON(LS.chapterCache, { chapters: {} });
+      try {
+        if (global.caches) await caches.delete('ggz-reader-pages-v1');
+      } catch { /* */ }
+      return { ok: true };
     },
 
     async get_read_progress(mdId) {
@@ -1997,15 +2329,18 @@ fragment MediaFields on Media {
       return lib.read_progress[key] || null;
     },
 
-    async set_read_progress(mdId, chapterId, chapterLabel, pageIndex) {
+    async set_read_progress(mdId, chapterId, chapterLabel, pageIndex, meta) {
       const lib = getLibrary();
       const key = String(mdId || '');
       if (!key) return { ok: false, error: 'Missing id' };
+      const prev = lib.read_progress[key] || {};
       lib.read_progress[key] = {
         md_id: key,
         chapter_id: chapterId || null,
         chapter: chapterLabel != null ? String(chapterLabel) : null,
         page: Number(pageIndex) || 1,
+        title: (meta && meta.title) || prev.title || null,
+        image: (meta && meta.image) || prev.image || null,
         updated_at: new Date().toISOString(),
       };
       // Cap map size

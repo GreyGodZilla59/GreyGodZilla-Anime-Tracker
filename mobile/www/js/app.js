@@ -24,6 +24,9 @@ const state = {
   watchlist: [],
   favorites: [],
   history: [],
+  watching: [],
+  continueWatch: [],
+  continueRead: [],
   searchResults: null,
   searchLoading: false,
   searchError: null,
@@ -119,6 +122,11 @@ function updateStats() {
   // Stats bar removed for a calmer UI — only tab badges remain.
   setText('#count-favorites', state.favorites.length);
   setText('#count-history', state.history.length);
+  setText('#count-watching', state.watching.length);
+}
+
+function isWatching(malId) {
+  return state.watching.some((w) => Number(w.mal_id) === Number(malId));
 }
 
 function noteStale(data, label) {
@@ -211,7 +219,9 @@ function findAnimeById(malId) {
     state.yearly?.finished,
     state.watchlist,
     state.favorites,
+    state.watching,
     state.history,
+    state.continueWatch,
     state.searchResults,
   ];
   if (state.weekly?.schedule) {
@@ -249,6 +259,12 @@ function completeButton(a) {
   return `<button type="button" class="complete-btn ${done ? 'completed' : ''}" data-complete-id="${a.mal_id}" title="${done ? 'Remove from history' : 'Mark as completed'}">${done ? '✓ Completed' : 'Mark Done'}</button>`;
 }
 
+function watchingButton(a) {
+  if (!a.mal_id) return '';
+  const on = isWatching(a.mal_id);
+  return `<button type="button" class="watching-btn ${on ? 'active' : ''}" data-watching-id="${a.mal_id}" title="${on ? 'Remove from Watching' : 'Add to Watching'}">${on ? '▶ Watching' : '+ Watching'}</button>`;
+}
+
 function watchButton(a) {
   if (!a.mal_id || isPrintMedia(a)) return '';
   const title = escapeHtml(titleOf(a));
@@ -263,7 +279,7 @@ function readButton(a) {
 }
 
 function actionButtons(a) {
-  return `<div class="detail-actions">${watchButton(a)}${readButton(a)}${favoriteButton(a)}${completeButton(a)}${trackButton(a)}</div>`;
+  return `<div class="detail-actions">${watchButton(a)}${readButton(a)}${watchingButton(a)}${favoriteButton(a)}${completeButton(a)}${trackButton(a)}</div>`;
 }
 
 function metaChips(a) {
@@ -364,7 +380,7 @@ function cardHtml(a) {
           </div>
         </div>
       </a>
-      <div class="card-track card-actions">${watchButton(a)}${readButton(a)}${favoriteButton(a)}${completeButton(a)}${trackButton(a)}</div>
+      <div class="card-track card-actions">${watchButton(a)}${readButton(a)}${watchingButton(a)}${favoriteButton(a)}${completeButton(a)}${trackButton(a)}</div>
     </article>
   `;
   } catch {
@@ -378,10 +394,44 @@ function trackFilterQuery() {
   return '';
 }
 
+function continueStripHtml() {
+  const watch = state.continueWatch || [];
+  const read = state.continueRead || [];
+  if (!watch.length && !read.length) return '';
+
+  const watchCards = watch.map((item) => {
+    const title = escapeHtml(item.title || 'Show');
+    const ep = item.episode != null ? `Ep ${item.episode}` : 'Resume';
+    const mins = item.seconds ? `${Math.floor(item.seconds / 60)}:${String(Math.floor(item.seconds % 60)).padStart(2, '0')}` : '';
+    return `
+      <button type="button" class="continue-card" data-continue-watch="${item.mal_id}">
+        <img src="${escapeHtml(item.image || '')}" alt="" loading="lazy">
+        <span class="continue-title">${title}</span>
+        <span class="continue-meta">▶ ${escapeHtml(ep)}${mins ? ` · ${mins}` : ''}</span>
+      </button>`;
+  }).join('');
+
+  const readCards = read.map((item) => {
+    const title = escapeHtml(item.title || 'Title');
+    const ch = item.chapter != null ? `Ch ${item.chapter}` : 'Resume';
+    const id = escapeHtml(String(item.md_id || item.mal_id || ''));
+    return `
+      <button type="button" class="continue-card" data-continue-read="${id}" data-continue-mal="${item.mal_id || ''}" data-continue-chapter="${escapeHtml(item.chapter_id || '')}" data-continue-label="${escapeHtml(item.chapter || '')}">
+        <img src="${escapeHtml(item.image || '')}" alt="" loading="lazy">
+        <span class="continue-title">${title}</span>
+        <span class="continue-meta">📖 ${escapeHtml(ch)}</span>
+      </button>`;
+  }).join('');
+
+  return `
+    <section class="continue-strip" aria-label="Continue">
+      ${watch.length ? `<div class="continue-block"><h3 class="continue-heading">▶ Continue watching</h3><div class="continue-row">${watchCards}</div></div>` : ''}
+      ${read.length ? `<div class="continue-block"><h3 class="continue-heading">📖 Continue reading</h3><div class="continue-row">${readCards}</div></div>` : ''}
+    </section>`;
+}
+
 function renderDaily() {
   const raw = state.bootstrap?.today || [];
-  // Extra safety: only keep entries that actually air on local today
-  const todayKeyStr = new Date().toISOString().slice(0, 10);
   const localKey = (() => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -397,18 +447,25 @@ function renderDaily() {
     return true;
   });
   const day = state.bootstrap?.today_name || getTodayDay();
+  const strip = continueStripHtml();
 
   setSubheader(`<strong>📅 Today · ${DAY_LABELS[day] || day}</strong> · ${list.length} episode drop${list.length === 1 ? '' : 's'}`);
   setText('#count-daily', list.length || '—');
 
   if (!list.length) {
     const err = state.bootstrap?.error;
+    if (strip) {
+      showContent(`${strip}<p class="week-empty" style="padding:1rem;text-align:center;">${err
+        ? `Couldn’t load today’s schedule (${escapeHtml(err)}). Pull down or tap ↻.`
+        : 'No episode drops scheduled for today. Pull down or tap ↻ to refresh.'}</p>`);
+      return;
+    }
     showEmpty(err
       ? `Couldn’t load today’s schedule (${err}). Tap ↻ Refresh.`
       : 'No episode drops scheduled for today (your local date). Tap ↻ to refresh.');
     return;
   }
-  showContent(`<div class="detail-list">${list.map(detailRow).join('')}</div>`);
+  showContent(`${strip}<div class="detail-list">${list.map(detailRow).join('')}</div>`);
 }
 
 function getWeekColWidths() {
@@ -842,6 +899,7 @@ async function syncLocalNotifications() {
     pool.push(item);
   };
   (state.favorites || []).forEach(add);
+  (state.watching || []).forEach(add);
   (state.watchlist || []).forEach(add);
   // Also scan currently loaded schedule cards for next air times
   (state.bootstrap?.today || []).forEach(add);
@@ -864,6 +922,10 @@ async function syncLocalNotifications() {
       title: 'Grey GodZilla · dropping soon',
       body: `${titleOf(a)} · ${ep} in ~${lead} min (${media})`,
       at: notifyAt,
+      mal_id: Number(a.mal_id) || 0,
+      media,
+      open_title: titleOf(a),
+      action: media === 'anime' ? 'watch' : 'read',
     });
     if (items.length >= 40) break;
   }
@@ -871,10 +933,26 @@ async function syncLocalNotifications() {
   try {
     await plugin.cancelAll?.();
   } catch { /* */ }
-  if (!items.length) return { scheduled: 0 };
+  if (!items.length) {
+    try { await plugin.persistSchedule?.({ items: [] }); } catch { /* */ }
+    return { scheduled: 0 };
+  }
 
   try {
     const res = await plugin.scheduleMany({ items });
+    // Persist for boot / process-death reschedule (native SharedPreferences)
+    try { await plugin.persistSchedule?.({ items }); } catch { /* older plugin */ }
+    // Refresh home-screen widget lines
+    try {
+      const widget = await api.get_today_widget_lines?.(5);
+      if (widget?.ok) {
+        await plugin.updateWidget?.({
+          title: widget.title,
+          lines: widget.lines || [],
+          count: widget.count || 0,
+        });
+      }
+    } catch { /* optional */ }
     return { scheduled: res?.scheduled || items.length };
   } catch (e) {
     return { scheduled: 0, error: String(e?.message || e) };
@@ -956,10 +1034,26 @@ async function renderSettings() {
       </section>
 
       <section class="settings-card">
+        <h3>Library backup</h3>
+        <p class="settings-hint">Export favorites, watching, history, progress, and alert settings as a JSON file. Import on a new phone (or share with your brother).</p>
+        <div class="settings-actions">
+          <button type="button" class="webhook-btn" id="export-library-btn">Export library</button>
+          <button type="button" class="webhook-btn secondary" id="import-library-btn">Import library</button>
+        </div>
+        <input type="file" id="import-library-file" accept="application/json,.json" hidden>
+        <label class="settings-toggle" style="margin-top:0.5rem;">
+          <input type="checkbox" id="import-merge" checked>
+          Merge with existing (uncheck to replace)
+        </label>
+        <p class="settings-msg" id="backup-msg"></p>
+      </section>
+
+      <section class="settings-card">
         <h3>About</h3>
         <p class="settings-hint">In-app name: <strong>Grey GodZilla Anime App</strong><br>
         Launcher icon name: <strong>GGZ Anime</strong><br>
-        Version: <strong id="settings-version">v1.6.2</strong></p>
+        Version: <strong id="settings-version">v1.8.0</strong><br>
+        v1.7–1.8: Continue rows, Watching list, boot-safe alerts, deep links, backup, PiP player, offline chapters, pull-to-refresh, Today widget.</p>
       </section>
     </div>
   `);
@@ -995,6 +1089,68 @@ async function renderSettings() {
       msg.textContent = sync.error
         ? `Sync failed: ${sync.error}`
         : `Scheduled ${sync.scheduled || 0} upcoming alert(s).`;
+    }
+  });
+
+  $('#export-library-btn')?.addEventListener('click', async () => {
+    const msg = $('#backup-msg');
+    try {
+      const res = await api?.export_library?.();
+      if (!res?.ok || !res.json) throw new Error(res?.error || 'Export failed');
+      const blob = new Blob([res.json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = res.filename || 'ggz-library-backup.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      // Also copy to clipboard as fallback on Android WebView
+      try {
+        await navigator.clipboard?.writeText?.(res.json);
+      } catch { /* optional */ }
+      if (msg) {
+        msg.className = 'settings-msg ok';
+        msg.textContent = `Exported ${res.counts?.favorites || 0} favorites, ${res.counts?.watching || 0} watching. File download started (JSON also copied if clipboard allowed).`;
+      }
+      showToast('Library exported.');
+    } catch (e) {
+      if (msg) {
+        msg.className = 'settings-msg err';
+        msg.textContent = String(e?.message || e);
+      }
+    }
+  });
+
+  $('#import-library-btn')?.addEventListener('click', () => {
+    $('#import-library-file')?.click();
+  });
+  $('#import-library-file')?.addEventListener('change', async (ev) => {
+    const msg = $('#backup-msg');
+    const file = ev.target?.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const merge = !!$('#import-merge')?.checked;
+      const res = await api?.import_library?.(text, { merge });
+      if (!res?.ok) throw new Error(res?.error || 'Import failed');
+      await loadLibrary();
+      await loadWebhookData();
+      await syncLocalNotifications();
+      if (msg) {
+        msg.className = 'settings-msg ok';
+        msg.textContent = `Imported (${merge ? 'merged' : 'replaced'}): ${res.counts?.favorites || 0} fav, ${res.counts?.watching || 0} watching, ${res.counts?.history || 0} finished.`;
+      }
+      showToast('Library imported.');
+      render();
+    } catch (e) {
+      if (msg) {
+        msg.className = 'settings-msg err';
+        msg.textContent = String(e?.message || e);
+      }
+    } finally {
+      ev.target.value = '';
     }
   });
 
@@ -1215,7 +1371,19 @@ function renderFavorites() {
     showEmpty('No favorites yet — hit ☆ Favorite on any show.');
     return;
   }
-  showContent(`<div class="detail-list">${list.map(detailRow).join('')}</div>`);
+  showContent(`${continueStripHtml()}<div class="detail-list">${list.map(detailRow).join('')}</div>`);
+}
+
+function renderWatching() {
+  const list = state.watching || [];
+  setSubheader(`Currently <strong>watching</strong> · ${list.length}`);
+  setText('#count-watching', list.length);
+  updateStats();
+  if (!list.length) {
+    showEmpty('Nothing in Watching yet — tap + Watching on a show you’re mid-season.');
+    return;
+  }
+  showContent(`${continueStripHtml()}<div class="detail-list">${list.map(detailRow).join('')}</div>`);
 }
 
 function renderHistory() {
@@ -1349,7 +1517,9 @@ function setSection(section) {
     const readInput = $('#search-read');
     if (readInput && state.search) readInput.value = state.search;
   } else if (next === 'saved') {
-    if (state.tab !== 'favorites' && state.tab !== 'history') state.tab = 'favorites';
+    if (state.tab !== 'favorites' && state.tab !== 'history' && state.tab !== 'watching') {
+      state.tab = 'favorites';
+    }
   } else if (next === 'settings') {
     state.tab = 'settings';
   }
@@ -1398,6 +1568,7 @@ function render() {
 
   if (state.section === 'saved') {
     if (state.tab === 'history') renderHistory();
+    else if (state.tab === 'watching') renderWatching();
     else renderFavorites();
     return;
   }
@@ -1430,16 +1601,153 @@ async function loadLibrary() {
   const api = await waitForApi();
   if (!api) return;
   try {
-    const [favorites, history] = await Promise.all([
+    const [favorites, history, watching, contW, contR] = await Promise.all([
       api.get_favorites?.() || [],
       api.get_history?.() || [],
+      api.get_watching?.() || [],
+      api.get_continue_watching?.(8) || [],
+      api.get_continue_reading?.(8) || [],
     ]);
     state.favorites = favorites || [];
     state.history = history || [];
+    state.watching = watching || [];
+    state.continueWatch = contW || [];
+    state.continueRead = contR || [];
     updateStats();
   } catch {
     /* library optional on older builds */
   }
+}
+
+async function toggleWatching(malId) {
+  const api = await waitForApi();
+  if (!api?.toggle_watching) return;
+  const anime = findAnimeById(malId) || { mal_id: malId };
+  const result = await api.toggle_watching(anime);
+  if (result?.ok) {
+    state.watching = result.watching || [];
+    if (result.history) state.history = result.history;
+    updateStats();
+    showToast(result.watching_status ? 'Added to Watching.' : 'Removed from Watching.');
+    await loadLibrary();
+    render();
+  } else {
+    showToast(result?.error || 'Could not update Watching.', 'err');
+  }
+}
+
+async function handleDeepLink(detail) {
+  if (!detail) return;
+  const malId = Number(detail.mal_id || detail.malId || 0);
+  const media = String(detail.media || 'anime').toLowerCase();
+  const action = String(detail.action || (media === 'anime' ? 'watch' : 'open')).toLowerCase();
+  const title = detail.open_title || detail.title || '';
+  if (!malId && !title) {
+    if (detail.section) setSection(detail.section);
+    return;
+  }
+  const anime = findAnimeById(malId) || {
+    mal_id: malId || undefined,
+    title: title || 'Open from notification',
+    media: media || 'anime',
+  };
+  showToast(`Opening ${titleOf(anime)}…`);
+  if (action === 'read' || (media && media !== 'anime')) {
+    if (!anime.media || anime.media === 'anime') anime.media = media !== 'anime' ? media : 'manga';
+    setSection('read');
+    await openReaderOverlay(anime);
+  } else if (action === 'watch' || media === 'anime') {
+    setSection('anime');
+    await openStreamOverlay(anime);
+  } else {
+    setSection('saved');
+    state.tab = 'watching';
+    render();
+  }
+}
+
+function setupPullToRefresh() {
+  const main = document.querySelector('main.main') || document.querySelector('.simple-main');
+  if (!main || main.dataset.ptrBound) return;
+  main.dataset.ptrBound = '1';
+  let startY = 0;
+  let pulling = false;
+  const indicator = document.createElement('div');
+  indicator.id = 'ptr-indicator';
+  indicator.className = 'ptr-indicator hidden';
+  indicator.textContent = 'Pull to refresh';
+  main.prepend(indicator);
+
+  main.addEventListener('touchstart', (e) => {
+    if (main.scrollTop > 2) return;
+    if (state.stream?.open || state.reader?.open) return;
+    startY = e.touches[0].clientY;
+    pulling = true;
+  }, { passive: true });
+
+  main.addEventListener('touchmove', (e) => {
+    if (!pulling) return;
+    const dy = e.touches[0].clientY - startY;
+    if (dy > 70 && main.scrollTop <= 0) {
+      indicator.classList.remove('hidden');
+      indicator.textContent = dy > 110 ? 'Release to refresh' : 'Pull to refresh';
+    } else {
+      indicator.classList.add('hidden');
+    }
+  }, { passive: true });
+
+  main.addEventListener('touchend', async (e) => {
+    if (!pulling) return;
+    const dy = (e.changedTouches?.[0]?.clientY || 0) - startY;
+    pulling = false;
+    indicator.classList.add('hidden');
+    if (dy > 110 && main.scrollTop <= 0) {
+      indicator.classList.remove('hidden');
+      indicator.textContent = 'Refreshing…';
+      try {
+        await forceRefreshAll();
+        await loadLibrary();
+        await syncLocalNotifications();
+      } finally {
+        indicator.classList.add('hidden');
+      }
+    }
+  }, { passive: true });
+}
+
+function setupSwipeGestures() {
+  let x0 = 0;
+  let y0 = 0;
+  const edge = document.body;
+  edge.addEventListener('touchstart', (e) => {
+    x0 = e.touches[0].clientX;
+    y0 = e.touches[0].clientY;
+  }, { passive: true });
+  edge.addEventListener('touchend', (e) => {
+    const x1 = e.changedTouches[0].clientX;
+    const y1 = e.changedTouches[0].clientY;
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    if (Math.abs(dx) < 80 || Math.abs(dx) < Math.abs(dy) * 1.4) return;
+    // Reader: swipe left/right changes chapter when pages are open
+    if (state.reader?.open && state.reader?.mode === 'pages') {
+      if (dx < 0) readerStep(1);
+      else readerStep(-1);
+      return;
+    }
+    // Chip-row swipe between track views
+    if (state.section === 'track' && !state.stream?.open) {
+      const order = ['daily', 'weekly', 'monthly', 'yearly', 'now', 'upcoming'];
+      const idx = order.indexOf(state.trackTab || state.tab);
+      if (idx < 0) return;
+      const next = order[idx + (dx < 0 ? 1 : -1)];
+      if (!next) return;
+      state.trackTab = next;
+      state.tab = next;
+      updateSectionChrome();
+      ensureTabData(next).then(() => render()).catch(() => render());
+    }
+  }, { passive: true });
 }
 
 async function toggleFavorite(malId) {
@@ -2034,7 +2342,7 @@ function setTab(tab) {
   if (['daily', 'weekly', 'monthly', 'now', 'upcoming', 'yearly'].includes(tab)) {
     state.trackTab = tab;
     state.section = 'track';
-  } else if (tab === 'favorites' || tab === 'history') {
+  } else if (tab === 'favorites' || tab === 'history' || tab === 'watching') {
     state.section = 'saved';
   } else if (tab === 'search') {
     // keep current anime/read section
@@ -2131,6 +2439,7 @@ async function flushWatchProgress() {
       video.currentTime,
       video.duration,
       titleOf(anime),
+      { image: anime.image, media: anime.media || 'anime', title: titleOf(anime) },
     );
   } catch {
     /* best-effort */
@@ -2338,8 +2647,23 @@ async function openReaderChapter(chapterId, chapterLabel, { autoAdvance = true }
       pagesEl.scrollTop = 0;
       $('#reader-body')?.scrollTo?.({ top: 0 });
     }
+    if (result.offline) {
+      setReaderStatus('Offline cache · scroll to read', '');
+    } else if (result.offline_cached) {
+      setReaderStatus('Scroll to read · chapter saved for offline', '');
+    }
     try {
-      await api.set_read_progress?.(state.reader.mdId, chapterId, chapter.chapter ?? chapterLabel, 1);
+      await api.set_read_progress?.(
+        state.reader.mdId,
+        chapterId,
+        chapter.chapter ?? chapterLabel,
+        1,
+        {
+          title: state.reader.animeTitle || state.reader.title || null,
+          image: state.reader.image || null,
+        },
+      );
+      loadLibrary().catch(() => {});
     } catch { /* optional */ }
   } catch (err) {
     state.reader.loading = false;
@@ -2394,6 +2718,9 @@ async function openReaderOverlay(item) {
   state.reader.loading = true;
   state.reader.mode = 'chapters';
   state.reader.error = null;
+  state.reader.animeTitle = titleOf(item);
+  state.reader.title = titleOf(item);
+  state.reader.image = item.image || '';
 
   const overlay = $('#reader-overlay');
   if (overlay) {
@@ -2828,7 +3155,36 @@ function init() {
   });
   loadLibrary().then(() => {
     syncLocalNotifications().catch(() => {});
+    render();
   });
+
+  setupPullToRefresh();
+  setupSwipeGestures();
+
+  // Notification / widget deep links (native injects window.__ggzDeepLink)
+  window.addEventListener('ggz-deeplink', (ev) => {
+    handleDeepLink(ev.detail || {}).catch(() => {});
+  });
+  if (window.__ggzDeepLink) {
+    const link = window.__ggzDeepLink;
+    window.__ggzDeepLink = null;
+    setTimeout(() => handleDeepLink(link).catch(() => {}), 400);
+  }
+  try {
+    const App = window.Capacitor?.Plugins?.App;
+    App?.addListener?.('appUrlOpen', (data) => {
+      try {
+        const u = new URL(data?.url || '');
+        handleDeepLink({
+          mal_id: u.searchParams.get('mal_id'),
+          media: u.searchParams.get('media'),
+          action: u.searchParams.get('action'),
+          title: u.searchParams.get('title'),
+          section: u.searchParams.get('section'),
+        });
+      } catch { /* */ }
+    });
+  } catch { /* */ }
 
   $('#refresh-btn')?.addEventListener('click', () => forceRefreshAll());
 
@@ -2888,6 +3244,44 @@ function init() {
       e.preventDefault();
       e.stopPropagation();
       openReaderChapter(readerCh.dataset.readerChapter, readerCh.dataset.readerChapterLabel);
+      return;
+    }
+
+    const contWatch = e.target.closest('[data-continue-watch]');
+    if (contWatch) {
+      e.preventDefault();
+      e.stopPropagation();
+      const malId = Number(contWatch.dataset.continueWatch);
+      const anime = findAnimeById(malId) || state.continueWatch.find((x) => Number(x.mal_id) === malId) || { mal_id: malId };
+      openStreamOverlay(anime);
+      return;
+    }
+
+    const contRead = e.target.closest('[data-continue-read]');
+    if (contRead) {
+      e.preventDefault();
+      e.stopPropagation();
+      const mdId = contRead.dataset.continueRead;
+      const malId = Number(contRead.dataset.continueMal) || mdId;
+      const item = findAnimeById(malId) || {
+        mal_id: malId,
+        md_id: mdId,
+        title: contRead.querySelector('.continue-title')?.textContent || 'Continue',
+        media: 'manga',
+      };
+      if (!item.media || item.media === 'anime') item.media = 'manga';
+      openReaderOverlay(item).then(() => {
+        const chId = contRead.dataset.continueChapter;
+        if (chId) openReaderChapter(chId, contRead.dataset.continueLabel || '');
+      });
+      return;
+    }
+
+    const watchStatusBtn = e.target.closest('[data-watching-id]');
+    if (watchStatusBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleWatching(Number(watchStatusBtn.dataset.watchingId));
       return;
     }
 

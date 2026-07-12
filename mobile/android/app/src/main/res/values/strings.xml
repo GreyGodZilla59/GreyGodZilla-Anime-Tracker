@@ -5,4 +5,5 @@
     <string name="title_activity_main">GGZ Anime</string>
     <string name="package_name">com.greygodzilla.animetracker</string>
     <string name="custom_url_scheme">com.greygodzilla.animetracker</string>
+    <string name="widget_today_description">Shows today’s anime drops from Grey GodZilla Anime App</string>
 </resources>

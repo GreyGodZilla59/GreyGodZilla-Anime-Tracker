@@ -3,12 +3,9 @@ package com.greygodzilla.animetracker;
 import android.Manifest;
 import android.app.AlarmManager;
 import android.app.PendingIntent;
-import android.content.Context;
-import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 
-import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 import com.getcapacitor.JSArray;
@@ -20,12 +17,14 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 /**
  * Free local notifications (no Firebase / no paid services).
  * Schedules exact alarms for upcoming drops using Android AlarmManager.
+ * Persists schedules for boot-safe restore.
  */
 @CapacitorPlugin(
         name = "GgzNotify",
@@ -64,15 +63,50 @@ public class NotifyPlugin extends Plugin {
 
     @PluginMethod
     public void cancelAll(PluginCall call) {
-        // Best-effort: cancel a range of possible IDs used by the app
-        AlarmManager am = (AlarmManager) getContext().getSystemService(Context.ALARM_SERVICE);
-        if (am != null) {
-            for (int id = 1000; id < 1200; id++) {
-                PendingIntent pi = pendingFor(id, "", "");
-                if (pi != null) am.cancel(pi);
-            }
-        }
+        NotifyStore.cancelRange(getContext());
+        NotifyStore.saveItems(getContext(), new JSONArray());
         call.resolve();
+    }
+
+    @PluginMethod
+    public void persistSchedule(PluginCall call) {
+        JSArray items = call.getArray("items");
+        try {
+            JSONArray arr = items != null ? new JSONArray(items.toString()) : new JSONArray();
+            NotifyStore.saveItems(getContext(), arr);
+            JSObject r = new JSObject();
+            r.put("ok", true);
+            r.put("count", arr.length());
+            call.resolve(r);
+        } catch (JSONException e) {
+            call.reject(e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void rescheduleFromStore(PluginCall call) {
+        NotifyReceiver.ensureChannel(getContext());
+        int n = NotifyStore.rescheduleAll(getContext());
+        JSObject r = new JSObject();
+        r.put("scheduled", n);
+        call.resolve(r);
+    }
+
+    @PluginMethod
+    public void updateWidget(PluginCall call) {
+        String title = call.getString("title", "GGZ Anime · Today");
+        JSArray lines = call.getArray("lines");
+        int count = call.getInt("count", 0);
+        try {
+            JSONArray arr = lines != null ? new JSONArray(lines.toString()) : new JSONArray();
+            NotifyStore.saveWidget(getContext(), title, arr, count);
+            TodayWidgetProvider.refreshAll(getContext());
+            JSObject r = new JSObject();
+            r.put("ok", true);
+            call.resolve(r);
+        } catch (JSONException e) {
+            call.reject(e.getMessage());
+        }
     }
 
     @PluginMethod
@@ -83,12 +117,13 @@ public class NotifyPlugin extends Plugin {
             call.reject("Missing items");
             return;
         }
-        AlarmManager am = (AlarmManager) getContext().getSystemService(Context.ALARM_SERVICE);
+        AlarmManager am = (AlarmManager) getContext().getSystemService(android.content.Context.ALARM_SERVICE);
         if (am == null) {
             call.reject("AlarmManager unavailable");
             return;
         }
         int scheduled = 0;
+        JSONArray persist = new JSONArray();
         try {
             for (int i = 0; i < items.length(); i++) {
                 JSONObject o = items.getJSONObject(i);
@@ -96,9 +131,27 @@ public class NotifyPlugin extends Plugin {
                 String title = o.optString("title", "GGZ Anime");
                 String body = o.optString("body", "A release is soon.");
                 long atMs = o.optLong("at", 0);
+                int malId = o.optInt("mal_id", 0);
+                String media = o.optString("media", "anime");
+                String openTitle = o.optString("open_title", title);
+                String action = o.optString("action", "watch");
                 if (atMs <= System.currentTimeMillis() + 15_000) continue;
 
-                PendingIntent pi = pendingFor(id, title, body);
+                // Keep for boot restore
+                JSONObject store = new JSONObject();
+                store.put("id", id);
+                store.put("title", title);
+                store.put("body", body);
+                store.put("at", atMs);
+                store.put("mal_id", malId);
+                store.put("media", media);
+                store.put("open_title", openTitle);
+                store.put("action", action);
+                persist.put(store);
+
+                PendingIntent pi = NotifyStore.pendingFor(
+                        getContext(), id, title, body, malId, media, openTitle, action
+                );
                 if (pi == null) continue;
 
                 try {
@@ -109,11 +162,11 @@ public class NotifyPlugin extends Plugin {
                     }
                     scheduled++;
                 } catch (SecurityException se) {
-                    // Fallback without exact alarm permission
                     am.set(AlarmManager.RTC_WAKEUP, atMs, pi);
                     scheduled++;
                 }
             }
+            NotifyStore.saveItems(getContext(), persist);
         } catch (JSONException e) {
             call.reject(e.getMessage());
             return;
@@ -121,19 +174,5 @@ public class NotifyPlugin extends Plugin {
         JSObject r = new JSObject();
         r.put("scheduled", scheduled);
         call.resolve(r);
-    }
-
-    private PendingIntent pendingFor(int id, String title, String body) {
-        Intent intent = new Intent(getContext(), NotifyReceiver.class);
-        intent.setAction(NotifyReceiver.ACTION_ALERT);
-        intent.putExtra("id", id);
-        intent.putExtra("title", title);
-        intent.putExtra("body", body);
-        return PendingIntent.getBroadcast(
-                getContext(),
-                id,
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-        );
     }
 }
